@@ -18,8 +18,10 @@ root:mkdir(DIR)
 local function path(nick) return DIR .. "/" .. nick end
 
 --- Баланс игрока в сотых монеты.
+--- Если питание пропало между удалением старого файла и переименованием
+--- нового, остаётся только <ник>.new - он и есть последний баланс.
 function wallet.get(nick)
-	local s = root:readAll(path(nick))
+	local s = root:readAll(path(nick)) or root:readAll(path(nick) .. ".new")
 	return floor(tonumber(s or "") or 0)
 end
 

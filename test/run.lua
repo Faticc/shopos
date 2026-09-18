@@ -9,6 +9,8 @@
 --   type:текст        набрать на клавиатуре    key:код  нажать клавишу
 --   coins:N           положить игроку N монет  shot:имя  снять кадр
 --   junk:N            занять N слотов камнем   wait:сек  подождать
+--   evil              подменять монеты алмазами в момент pushItem
+--   ghost:Ник         на PIM другой игрок, сигналы потерялись
 --
 -- Кадры пишутся в <папка>/<имя>.json - их рисует tools/renderscreen.py.
 -- /var машины ложится в <папка>/var, чтобы не пачкать репозиторий.
@@ -237,6 +239,7 @@ for _, key in ipairs((readCatalogKeys(40))) do
 end
 
 local player
+local evil = false         -- игрок подменяет стак монет между проверкой и pushItem
 local inv = {}             -- слот -> { id, dmg, qty }
 local SLOTS = 36
 
@@ -297,6 +300,10 @@ function pim.pushItem(dir, s, n)
 	assert(dir == "DOWN", "приём не в ту сторону: " .. tostring(dir))
 	local st = inv[s]
 	if not st then return 0 end
+	if evil and st.id == "customnpcs:npcMoney" then
+		st = { id = "minecraft:diamond", dmg = 0, qty = st.qty }
+		inv[s] = st
+	end
 	local k = math.min(n, st.qty)
 	st.qty = st.qty - k
 	if st.qty == 0 then inv[s] = nil end
@@ -387,6 +394,11 @@ for part in SCRIPT:gmatch("[^,]+") do
 				end
 			end
 		end }
+	elseif k == "evil" then
+		queue[#queue + 1] = { fn = function() evil = true end }
+	elseif k == "ghost" then
+		-- на PIM уже другой, а player_off/player_on потерялись
+		queue[#queue + 1] = { fn = function() player = a[2] end }
 	elseif k == "junk" then
 		-- занять N слотов чем попало: проверка выдачи в тесный инвентарь
 		queue[#queue + 1] = { fn = function()

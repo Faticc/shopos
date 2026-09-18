@@ -63,6 +63,25 @@ local function slot(it)
 	return { id = it.id, dmg = floor(it.dmg or 0), qty = it.qty or it.count or 0, nbt = it.nbt_hash }
 end
 
+--- Сколько штук предмета (без NBT) лежит в МЭ; nil - МЭ не ответила.
+--- Этим пополнение проверяет, что в сеть пришли именно монеты: между
+--- взглядом на слот и pushItem проходит тик, и игрок успевает подложить в
+--- слот другой стак.
+function S:count(id, dmg)
+	local me = self:me()
+	if not me then return nil end
+	local ok, raw = pcall(me.getAvailableItems)
+	if not ok or type(raw) ~= "table" then return nil end
+	local n = 0
+	for i = 1, #raw do
+		local f = raw[i].fingerprint
+		if f and f.id == id and floor(f.dmg or 0) == dmg and not f.nbt_hash then
+			n = n + (raw[i].size or 0)
+		end
+	end
+	return n
+end
+
 --- Слоты игрока: номер -> { id, dmg, qty, nbt }. Весь инвентарь одним
 --- вызовом getAllStacks(false) - вызов к PIM стоит тик, и по слоту на
 --- вызов это почти две секунды на 36 слотов. Не вышло - по одному.
