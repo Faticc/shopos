@@ -117,6 +117,8 @@ local function parse(s, i)
 		price = price / 1e6,         -- в единицах выгрузки цен
 		icon = u32(s, i + 6),
 		braille = flags % 2 == 1,
+		-- мета у этого id - заряд или износ, любая мета стоит как эта запись
+		wear = floor(flags / 4) % 2 == 1,
 	}
 end
 

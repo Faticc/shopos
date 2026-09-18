@@ -141,30 +141,55 @@ local function refresh()
 		stock, stockErr = {}, err
 		return
 	end
+	-- ключи с метой и без: для вещей, где мета - заряд или износ, цена
+	-- лежит на записи без меты
 	local keys = {}
 	for i = 1, #items do
 		local it = items[i]
-		it.key = catalog.key(it.id, it.dmg)
-		-- uid различает экземпляры с разным NBT; цена - по key
-		it.uid = it.nbt and (it.key .. "#" .. it.nbt) or it.key
-		keys[i] = it.key
+		keys[#keys + 1] = catalog.key(it.id, it.dmg)
+		if it.dmg ~= 0 then keys[#keys + 1] = it.id end
 	end
 	cat:resolve(keys)
-	local out, coins = {}, 0
+
+	-- Один товар - одна запись каталога. Экземпляры с разным NBT (энергия
+	-- Draconic, заряд IC2) и, у вещей с износом, с разной метой (полоска
+	-- заряда IC2, износ инструментов) складываются в одну карточку;
+	-- каждый экземпляр помнит свой отпечаток, по нему и выдаётся.
+	local out, byKey, coins = {}, {}, 0
 	for i = 1, #items do
 		local it = items[i]
 		if it.id == COIN.id and it.dmg == COIN.dmg then
 			if not it.nbt then coins = coins + it.size end
 		elseif not it.nbt or SELL_NBT then
-			local rec = cat:get(it.key)
+			local rec = cat:get(catalog.key(it.id, it.dmg))
+			if not rec and it.dmg ~= 0 then
+				local base = cat:get(it.id)
+				if base and base.wear then rec = base end
+			end
 			if rec and rec.price > 0 then
-				it.rec, it.unit = rec, unitOf(rec)
-				it.label = rec.label ~= "" and rec.label or it.key
-				it.low = unicode.lower(it.label)
-				it.mod = modOf(it.id)
-				out[#out + 1] = it
+				local e = byKey[rec.key]
+				if not e then
+					e = { key = rec.key, id = it.id, rec = rec, unit = unitOf(rec), size = 0,
+					      variants = {}, mod = modOf(it.id) }
+					e.label = rec.label ~= "" and rec.label or rec.key
+					e.low = unicode.lower(e.label)
+					byKey[rec.key] = e
+					out[#out + 1] = e
+				end
+				e.size = e.size + it.size
+				e.variants[#e.variants + 1] = { id = it.id, dmg = it.dmg, nbt = it.nbt, size = it.size }
+				if it.nbt or it.dmg ~= e.variants[1].dmg then e.mixed = true end
 			end
 		end
+	end
+	-- выдача по порядку: сначала без NBT, потом с меньшей метой - у IC2
+	-- это заряженнее, у инструментов - целее
+	for i = 1, #out do
+		table.sort(out[i].variants, function(a, b)
+			if (a.nbt == nil) ~= (b.nbt == nil) then return a.nbt == nil end
+			if a.dmg ~= b.dmg then return a.dmg < b.dmg end
+			return (a.nbt or "") < (b.nbt or "")
+		end)
 	end
 	stock, coinsInMe, stockErr = out, coins, nil
 	if #out == 0 then stockErr = "в МЭ нет товаров с ценой" end
@@ -205,13 +230,13 @@ local function choose()
 		if s == "cheap" and a.unit ~= b.unit then return a.unit < b.unit end
 		if s == "dear" and a.unit ~= b.unit then return a.unit > b.unit end
 		if a.low ~= b.low then return a.low < b.low end
-		return a.uid < b.uid
+		return a.key < b.key
 	end)
 	shown = out
 end
 
-local function findStock(uid)
-	for i = 1, #stock do if stock[i].uid == uid then return stock[i] end end
+local function findStock(key)
+	for i = 1, #stock do if stock[i].key == key then return stock[i] end end
 	return nil
 end
 
@@ -460,8 +485,8 @@ local function drawItem()
 	local wtxt = W - x - 2
 	text(x, 10, clip(e.label, wtxt), C.white, C.bg)
 	text(x, 11, clip(modName(e.mod) .. "  ·  " .. e.key, wtxt), C.faint, C.bg)
-	if e.nbt then
-		text(x, 12, clip("особый экземпляр: заряд, улучшения или чары - выдаётся именно он", wtxt), C.accent, C.bg)
+	if e.mixed then
+		text(x, 12, clip("экземпляры с разным зарядом или износом - один товар; выдаются начиная с самых целых", wtxt), C.accent, C.bg)
 	end
 
 	local col = floor(wtxt / 3)
@@ -721,14 +746,18 @@ function shop.buy()
 	if not left then shop.say("не удалось списать деньги", C.red) return end
 	balance = left
 	shop.say("выдаю…", C.dim)
-	local sent = store:give(e.id, e.dmg, qty, e.nbt)
+	local sent = 0
+	for _, v in ipairs(e.variants) do
+		if sent >= qty then break end
+		sent = sent + store:give(v.id, v.dmg, min(v.size, qty - sent), v.nbt)
+	end
 	local paid = totalOf(e, sent)
 	if paid < cost then balance = wallet.add(nick, cost - paid) or wallet.get(nick) end
 	wallet.log(("%s купил %s x%d/%d за %s, счёт %s"):format(
-		nick, e.uid, sent, qty, wallet.format(paid), wallet.format(balance)))
+		nick, e.key, sent, qty, wallet.format(paid), wallet.format(balance)))
 
 	refresh()
-	local now = findStock(e.uid)
+	local now = findStock(e.key)
 	if now then
 		view.item = now
 		view.qty = max(1, min(view.qty, now.size))

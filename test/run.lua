@@ -236,6 +236,12 @@ addNet("minecraft:enchanted_book", 0, 3, "abc123")
 addNet("DraconicEvolution:draconicChest", 0, 1, "e1f00d")
 addNet("DraconicEvolution:wyvernPickaxe", 0, 2, "77aa01")
 addNet("DraconicEvolution:wyvernPickaxe", 0, 1, "77aa02")
+-- IC2: заряд и в мете (полоска 1..26), и в NBT; инструмент с износом в мете
+addNet("IC2:itemArmorNanoChestplate", 12, 1, "c12")
+addNet("IC2:itemArmorNanoChestplate", 3, 1, "c03")
+addNet("IC2:itemArmorNanoChestplate", 26, 2, "c26")
+addNet("IC2:itemBatCrystal", 1, 3, "b01")
+addNet("minecraft:diamond_pickaxe", 700, 1)
 for _, key in ipairs((readCatalogKeys(40))) do
 	local id, dmg = key:match("^(.+):(%d+)$")
 	if not id or not id:find(":") then id, dmg = key, 0 end
