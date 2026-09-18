@@ -1,11 +1,15 @@
 -- catalog - цена, название и иконка предмета по его ключу.
 --
--- Файл DWSC собирает tools/shopcat.py, формат расписан там. В памяти лежит
+-- Файл DWSC собирает tools/shopcat.py, формат расписан там. Крупные иконки
+-- не влезают на один диск, и тогда каталог лежит двумя частями: основная
+-- на загрузочном диске, catalog.2.bin с остальными иконками - на любом
+-- другом диске машины, он ищется сам. В памяти лежит
 -- только индекс хешей (8 байт на предмет); запись предмета читается с диска
 -- при первой встрече и дальше живёт в кеше. Предметы, которых нет в МЭ, в
 -- память не попадают вовсе.
 
 local root = require("root")
+local disk = require("disk")
 
 local byte, sub, floor = string.byte, string.sub, math.floor
 
@@ -45,15 +49,39 @@ function catalog.open(path)
 		count = u32(h, 9),
 		recOff = u32(h, 21),
 		stamp = u32(h, 17),
+		split = u32(h, 29),
 		known = {},      -- ключ -> запись или false
 		icons = {}, iconN = 0,
 	}, C)
+	if self.split > 0 then
+		self.path2 = path:gsub("%.bin$", "") .. ".2.bin"
+		self.r2 = catalog.findSecond(self.path2)
+	end
 	self.idx = r.at(u32(h, 13), self.count * 8)
 	if #self.idx ~= self.count * 8 then
 		r.close()
 		return nil, path .. ": файл обрезан"
 	end
 	return self
+end
+
+--- Вторая часть каталога: тот же путь на любом диске машины. Порядок
+--- дисков не важен - какой вставлен, на том и найдётся.
+function catalog.findSecond(path)
+	for addr in component.list("filesystem") do
+		local p = component.proxy(addr)
+		local ok, has = pcall(p.exists, path)
+		if ok and has then
+			local r = disk.new(p):reader(path)
+			if r then return r end
+		end
+	end
+	return nil
+end
+
+--- Нет второго диска: иконки с него не покажутся, но торговать можно.
+function C:missing()
+	return self.split > 0 and not self.r2
 end
 
 --- Номера позиций индекса с этим хешем: двоичный поиск первой, дальше
@@ -136,20 +164,31 @@ function C:get(key)
 	return v or nil
 end
 
---- Ячейки иконки. Кеш на сотню иконок - это две страницы витрины и
---- примерно 30 КБ памяти; переполнился - сбрасывается целиком.
+--- Ячейки иконки. Кеш держит несколько страниц витрины; переполнился -
+--- сбрасывается целиком.
 function C:cells(rec)
 	if not rec or rec.icon == 0 then return nil end
 	local hit = self.icons[rec.icon]
 	if hit then return hit end
-	local data = self.r.at(rec.icon, self.iw * self.ih * (rec.braille and 3 or 2))
+	local n = self.iw * self.ih * (rec.braille and 3 or 2)
+	local data
+	if self.split > 0 and rec.icon >= self.split then
+		if not self.r2 then return nil end
+		data = self.r2.at(rec.icon - self.split, n)
+	else
+		data = self.r.at(rec.icon, n)
+	end
 	if #data == 0 then return nil end
-	if self.iconN >= 100 then self.icons, self.iconN = {}, 0 end
+	-- 60 иконок 32x32 это 60 КБ: три страницы витрины
+	if self.iconN >= 60 then self.icons, self.iconN = {}, 0 end
 	self.icons[rec.icon] = data
 	self.iconN = self.iconN + 1
 	return data
 end
 
-function C:close() self.r.close() end
+function C:close()
+	self.r.close()
+	if self.r2 then self.r2.close() end
+end
 
 return catalog

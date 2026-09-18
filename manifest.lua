@@ -8,10 +8,15 @@
 		{ "sys/storage.lua",  "/sys/storage.lua" },
 		{ "sys/wallet.lua",   "/sys/wallet.lua" },
 		{ "sys/shop.lua",     "/sys/shop.lua" },
-		{ "data/catalog.bin", "/data/catalog.bin" },
+		-- каталог двумя частями: крупные иконки на один диск не влезают.
+		-- Вторая часть ложится на второй жёсткий диск, магазин найдёт её сам
+		{ "data/catalog.bin",   "/data/catalog.bin",   big = true },
+		{ "data/catalog.2.bin", "/data/catalog.2.bin", big = true, disk = 2 },
 		{ "cfg/shop.cfg",     "/cfg/shop.cfg", keep = true },
 		{ "init.lua",         "/init.lua" },
 	},
 	-- стирается только по --clean
-	openos = { "/bin", "/lib", "/boot", "/etc", "/usr", "/home", "/mnt", "/os" },
+	openos = { "/bin", "/lib", "/boot", "/etc", "/usr", "/home", "/mnt" },
+	-- прежние версии ShopOS: стирается всегда
+	obsolete = { "/os", "/data/shop.bin", "/data/icons.bin" },
 }

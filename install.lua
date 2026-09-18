@@ -2,6 +2,8 @@
 --   wget -f https://raw.githubusercontent.com/Faticc/shopos/main/install.lua /tmp/i.lua && /tmp/i.lua
 --
 --   --repo=владелец/репо  --branch=ветка  --disk=адрес
+--   --disk2=адрес  второй диск под catalog.2.bin (по умолчанию ищется сам:
+--                  любой записываемый диск, кроме загрузочного и tmpfs)
 --   --clean  стереть OpenOS (и прежний ShopOS из /os)   --dry  только показать
 --   --cfg  перезаписать и /cfg/shop.cfg (по умолчанию он не трогается)
 --   --noreboot  не перезагружать в конце (по умолчанию перезагружает сам)
@@ -54,18 +56,47 @@ local function fetch(path, sink)
 end
 
 --- Скачать прямо в файл: сначала рядом, подмена - только если всё дошло.
-local function download(from, to)
+--- Большие части каталога стираются заранее: старая и новая рядом на диск
+--- в 4 МБ не лягут.
+local function download(dev, from, to, big)
 	local dir = to:match("^(.*)/[^/]*$")
-	if dir and dir ~= "" and not disk.exists(dir) then disk.makeDirectory(dir) end
+	if dir and dir ~= "" and not dev.exists(dir) then dev.makeDirectory(dir) end
+	if big then dev.remove(to) end
 	local tmp = to .. ".part"
-	local h, why = disk.open(tmp, "w")
+	local h, why = dev.open(tmp, "w")
 	if not h then return nil, why end
-	local size, err = fetch(from, function(chunk) disk.write(h, chunk) end)
-	disk.close(h)
-	if not size then disk.remove(tmp) return nil, err end
-	disk.remove(to)
-	disk.rename(tmp, to)
+	local size, err = fetch(from, function(chunk)
+		local ok, werr = dev.write(h, chunk)
+		if not ok then error("запись: " .. tostring(werr or "нет места на диске"), 0) end
+	end)
+	dev.close(h)
+	if not size then dev.remove(tmp) return nil, err end
+	dev.remove(to)
+	dev.rename(tmp, to)
 	return size
+end
+
+--- Второй диск: указанный --disk2, иначе тот, где часть каталога уже
+--- лежит, иначе самый свободный записываемый - не загрузочный и не tmpfs.
+local function secondDisk(path)
+	if opts.disk2 then
+		local d = component.proxy(component.get(opts.disk2) or opts.disk2)
+		if not d or d.type ~= "filesystem" or d.isReadOnly() then die("--disk2 не годится") end
+		return d
+	end
+	local tmp = computer.tmpAddress and computer.tmpAddress()
+	local best, free
+	for addr in component.list("filesystem") do
+		if addr ~= disk.address and addr ~= tmp then
+			local d = component.proxy(addr)
+			if not d.isReadOnly() then
+				if d.exists(path) then return d end
+				local f = d.spaceTotal() - d.spaceUsed()
+				if not best or f > free then best, free = d, f end
+			end
+		end
+	end
+	return best
 end
 
 print("ShopOS: " .. REPO .. "@" .. BRANCH .. " -> диск " .. target:sub(1, 8))
@@ -75,11 +106,31 @@ if not got then die("manifest.lua: " .. tostring(why)) end
 local src = table.concat(parts)
 local manifest = load("return " .. src, "=manifest", "t", {})()
 
+-- второй диск проверяем до того, как что-то стирать и писать
+local disk2
+for _, f in ipairs(manifest.files) do
+	if f.disk == 2 then
+		disk2 = secondDisk(f[2])
+		if not disk2 then
+			die("нужен второй жёсткий диск: на нём ляжет " .. f[2]
+				.. " (крупные иконки не влезают на один). Вставьте диск и повторите")
+		end
+	end
+end
+if disk2 then print("второй диск: " .. disk2.address:sub(1, 8)) end
+
 if opts.dry then
 	for _, f in ipairs(manifest.files) do
-		print("  " .. f[2] .. ((f.keep and disk.exists(f[2])) and "  (есть, не трогаю)" or ""))
+		local where = f.disk == 2 and "  [второй диск]" or ""
+		print("  " .. f[2] .. where .. ((f.keep and disk.exists(f[2])) and "  (есть, не трогаю)" or ""))
 	end
 	os.exit(0)
+end
+
+-- остатки прежних версий ShopOS стираются всегда: одни они заняли бы
+-- половину диска
+for _, d in ipairs(manifest.obsolete or {}) do
+	if disk.exists(d) then disk.remove(d) print("  убрано старое " .. d) end
 end
 
 if opts.clean then
@@ -92,7 +143,7 @@ for _, f in ipairs(manifest.files) do
 	if f.keep and disk.exists(f[2]) and not opts.cfg then
 		print("  = " .. f[2] .. "  (есть, не трогаю; --cfg перезапишет)")
 	else
-		local size, err = download(f[1], f[2])
+		local size, err = download(f.disk == 2 and disk2 or disk, f[1], f[2], f.big)
 		if not size then die("оборвалось на " .. f[1] .. ": " .. tostring(err) .. "\n/init.lua не тронут") end
 		print(("  + %-20s %d КБ"):format(f[2], math.ceil(size / 1024)))
 	end

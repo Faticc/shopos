@@ -25,7 +25,7 @@ local shop = {}
 -- ------------------------------------------------------------------ настройки
 
 local cfg = root:table("/cfg/shop.cfg") or {}
-local TITLE = cfg.title or "МАГАЗИН"
+local TITLE = cfg.title or "SHOP"
 -- конфиг от прежнего ShopOS давал валюту списком номиналов: берём первый
 local COIN = cfg.currency or {}
 if COIN[1] then COIN = COIN[1] end
@@ -210,19 +210,25 @@ local function drawIcon(e, x, y, back, scale)
 	end
 end
 
-local CW, CH = 20, 12     -- карточка товара
+-- Карточка товара подстраивается под размер иконок в каталоге: 16x16
+-- (16x8 ячеек) с полями по бокам, 32x32 (32x16 ячеек) во всю ширину -
+-- иначе четыре карточки в ряд на экран 160 не встают.
+local IW, IH = cat and cat.iw or 16, cat and cat.ih or 8
+local CW = IW >= 32 and IW or IW + 4
+local CH = IH + 4         -- поле сверху, иконка, две строки подписи, цена
 
 local function drawCard(e, x, y)
 	fill(x, y, CW, CH, C.card)
-	drawIcon(e, x + 2, y + 1, C.card)
+	drawIcon(e, x + floor((CW - IW) / 2), y + 1, C.card)
+	local ty = y + IH + 1
 	local a, b = wrap2(e.label, CW - 2)
-	text(x + 1, y + 9, pad(a, CW - 2), C.text, C.card)
-	text(x + 1, y + 10, pad(b, CW - 2), C.text, C.card)
+	text(x + 1, ty, pad(a, CW - 2), C.text, C.card)
+	text(x + 1, ty + 1, pad(b, CW - 2), C.text, C.card)
 	local price = unitText(e)
 	local left = "×" .. num(e.size)
-	text(x + 1, y + 11, pad(price, CW - 2), C.gold, C.card)
+	text(x + 1, ty + 2, pad(price, CW - 2), C.gold, C.card)
 	local room = CW - 2 - unicode.len(price) - 1
-	if room >= 2 then text(x + CW - 1 - min(room, unicode.len(left)), y + 11, clip(left, room), C.dim, C.card) end
+	if room >= 2 then text(x + CW - 1 - min(room, unicode.len(left)), ty + 2, clip(left, room), C.dim, C.card) end
 end
 
 local function drawHeader()
@@ -243,6 +249,9 @@ end
 
 local function footerText()
 	if toast.text and computer.uptime() < toast.till then return toast.text, toast.colour end
+	if cat and cat:missing() then
+		return "нет второго диска с " .. cat.path2 .. " - часть иконок не видна", C.red
+	end
 	if not nick then return "", C.dim end
 	return "Пополнение: положите монеты в инвентарь и нажмите «ПОПОЛНИТЬ»", C.dim
 end
@@ -264,14 +273,16 @@ local function drawFooter()
 	end
 end
 
-local SW = 30             -- ширина боковой панели
+-- ширина боковой панели: с крупными иконками она уступает место четвёртой
+-- колонке карточек
+local SW = IW >= 32 and 26 or 30
 
 local function drawSide()
 	fill(1, 4, SW, H - 4, C.panel)
 	-- поиск
 	fill(2, 5, SW - 2, 1, C.card)
 	if view.query == "" then
-		text(3, 5, "поиск: печатайте название", C.faint, C.card)
+		text(3, 5, "поиск: наберите текст", C.faint, C.card)
 	else
 		text(3, 5, clip(view.query, SW - 7) .. "_", C.text, C.card)
 		text(SW - 2, 5, "×", C.red, C.card)
@@ -369,14 +380,15 @@ local function drawItem()
 	button(3, 5, 14, 3, "◀ НАЗАД", C.text, C.line)
 	hit(3, 5, 14, 3, function() shop.back() end)
 
-	-- крупная иконка
-	local iw, ih = cat.iw * 2, cat.ih * 2
+	-- крупная иконка: мелкие растягиваются вдвое, 32x32 и так крупные
+	local scale = IW < 24 and 2 or 1
+	local iw, ih = IW * scale, IH * scale
 	fill(5, 10, iw + 4, ih + 2, C.card)
-	if e.rec.braille then
+	if scale == 2 and e.rec.braille then
 		-- брайль вдвое не растянуть: рисуем как есть, по центру рамки
-		drawIcon(e, 7 + floor(cat.iw / 2), 11 + floor(cat.ih / 2), C.card)
+		drawIcon(e, 7 + floor(IW / 2), 11 + floor(IH / 2), C.card)
 	else
-		drawIcon(e, 7, 11, C.card, 2)
+		drawIcon(e, 7, 11, C.card, scale)
 	end
 
 	local x = iw + 14
@@ -432,7 +444,7 @@ local function pickTeaser()
 	teaser = {}
 	local pool = {}
 	for i = 1, #stock do if stock[i].rec.icon ~= 0 then pool[#pool + 1] = stock[i] end end
-	for _ = 1, min(6, #pool) do
+	for _ = 1, min(6, floor((W + 1) / (CW + 1)), #pool) do
 		local i = math.random(#pool)
 		teaser[#teaser + 1] = table.remove(pool, i)
 	end
