@@ -877,6 +877,24 @@ end
 
 -- ------------------------------------------------------------------ вход
 
+--- Ник игрока из сигнала PIM.
+---
+--- Мод шлёт player_on с именем, uuid и именем периферии, а некоторые сборки
+--- добавляют спереди ещё и адрес компонента. Гадать, какой по счёту аргумент
+--- окажется ником, - как раз тот случай, когда угадал один раз, а потом год
+--- ловишь uuid вместо имени. Поэтому берём первый аргумент, похожий на ник
+--- Minecraft: до шестнадцати символов из букв, цифр и подчёркивания. Ни uuid
+--- с дефисами, ни адрес компонента так не проходят.
+local function pickPlayer(...)
+	for i = 1, select("#", ...) do
+		local v = select(i, ...)
+		if type(v) == "string" and #v >= 1 and #v <= 16 and v:match("^[%w_]+$") then
+			return v
+		end
+	end
+	return nil
+end
+
 --- Вход и выход игрока. Данные прошлого забываются сразу: иначе следующий,
 --- кто встанет на PIM, увидит чужой баланс, пока экран не перерисуется.
 local function login(player)
@@ -913,13 +931,13 @@ end
 
 local function run()
 	build()
-	U:on("player_on", function(_, _, player) login(player) end)
+	U:on("player_on", function(_, ...) login(pickPlayer(...)) end)
 	U:on("player_off", function() logout() end)
 
 	-- Уже стоит на PIM к моменту запуска: лаунчер перезапускает магазин, а
 	-- игрок при этом никуда не уходил и второго player_on не будет.
 	local ok, users = pcall(computer.users)
-	if ok and users then login(users) end
+	if ok then login(pickPlayer(users)) end
 
 	U:run(nick and screens.main or screens.lock)
 end

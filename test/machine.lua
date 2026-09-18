@@ -449,17 +449,31 @@ local libunicode = {
 --------------------------------------------------------------- события
 
 local queue, shots = {}, {}
+local PLAYER = "Steve"
 if EVENTS then
 	for part in EVENTS:gmatch("[^,]+") do
 		local f = {}
 		for pcs in part:gmatch("[^:]+") do f[#f + 1] = pcs end
 		local kind = f[1]
-		if kind == "scroll" then queue[#queue + 1] = { "scroll", SCREEN, 1, 1, tonumber(f[2]) }
-		elseif kind == "touch" then queue[#queue + 1] = { "touch", SCREEN, tonumber(f[2]), tonumber(f[3]), 0 }
-		elseif kind == "drag" then queue[#queue + 1] = { "drag", SCREEN, tonumber(f[2]), tonumber(f[3]), 0 }
-		elseif kind == "key" then queue[#queue + 1] = { "key_down", SCREEN, tonumber(f[2]), tonumber(f[3] or 0) }
-		elseif kind == "on" then queue[#queue + 1] = { "player_on", SCREEN, f[2] }
-		elseif kind == "off" then queue[#queue + 1] = { "player_off", SCREEN }
+		-- Сигналы собираются ровно так, как их шлёт мод, со всеми хвостовыми
+		-- аргументами. Пока их не было, ошибки в разборе не всплывали: код
+		-- брал "последний непустой" и случайно попадал в нужный.
+		--   touch/drag/scroll: адрес, x, y, кнопка или направление, НИК
+		--   key_down:          адрес, символ, код, НИК
+		--   player_on/off:     ник, uuid, имя периферии  (так шлёт PIM)
+		if kind == "scroll" then
+			queue[#queue + 1] = { "scroll", SCREEN, 1, 1, tonumber(f[2]), PLAYER }
+		elseif kind == "touch" then
+			queue[#queue + 1] = { "touch", SCREEN, tonumber(f[2]), tonumber(f[3]), 0, PLAYER }
+		elseif kind == "drag" then
+			queue[#queue + 1] = { "drag", SCREEN, tonumber(f[2]), tonumber(f[3]), 0, PLAYER }
+		elseif kind == "key" then
+			queue[#queue + 1] = { "key_down", SCREEN, tonumber(f[2]), tonumber(f[3] or 0), PLAYER }
+		elseif kind == "on" then
+			PLAYER = f[2]
+			queue[#queue + 1] = { "player_on", f[2], "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "pim" }
+		elseif kind == "off" then
+			queue[#queue + 1] = { "player_off", PLAYER, "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "pim" }
 		elseif kind == "shot" then queue[#queue + 1] = { "__shot", f[2] }
 		end
 	end

@@ -930,9 +930,13 @@ function U:dispatch(ev, adr, a, b, c, d)
 		local w = top:at(a, b)
 		if w then w:onTouch(a, b, c) top:flush() end
 	elseif ev == "scroll" then
+		-- scroll(адрес, x, y, направление, ник). Направление в четвёртом
+		-- аргументе, в пятом - имя игрока. Пока тут стояло d or c, на живой
+		-- машине в арифметику уезжала строка с ником, и магазин падал на
+		-- первом же движении колеса.
 		local w = top:at(a, b)
-		if w and w.onScroll then w:onScroll(d or c) top:flush()
-		elseif top.focus and top.focus.onScroll then top.focus:onScroll(d or c) top:flush() end
+		if w and w.onScroll then w:onScroll(c) top:flush()
+		elseif top.focus and top.focus.onScroll then top.focus:onScroll(c) top:flush() end
 	elseif ev == "drag" then
 		local w = top:at(a, b)
 		if w and w.onDrag then w:onDrag(a, b) top:flush() end
