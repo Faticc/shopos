@@ -11,9 +11,13 @@
 --   junk:N            занять N слотов камнем   wait:сек  подождать
 --   evil              подменять монеты алмазами в момент pushItem
 --   ghost:Ник         на PIM другой игрок, сигналы потерялись
+--   give:мод:имя:мета:N   положить игроку N штук предмета
+--   old:Ник:сотые     счёт прежнего формата в /var/wallet до запуска
+--   nodata            без третьего диска: данные на загрузочном
 --
 -- Кадры пишутся в <папка>/<имя>.json - их рисует tools/renderscreen.py.
--- /var машины ложится в <папка>/var, чтобы не пачкать репозиторий.
+-- /var машины ложится в <папка>/var, диск данных - в <папка>/data3, чтобы
+-- не пачкать репозиторий. У PIM, как в игре, 40 слотов: 36 и 4 брони.
 
 local OUT = arg[1] or "out"
 local SCRIPT = arg[2] or ""
@@ -21,9 +25,19 @@ local SCRIPT = arg[2] or ""
 -- приходит не в utf-8
 if SCRIPT:sub(1, 1) == "@" then SCRIPT = assert(io.open(SCRIPT:sub(2), "rb")):read("a"):gsub("%s+$", "") end
 local MAXREAD = 2048
+local NODATA = SCRIPT:find("nodata", 1, true) ~= nil
 
 local function sh(cmd) return os.execute(cmd) end
-sh('mkdir "' .. OUT:gsub("/", "\\") .. '\\var\\wallet" 2>nul')
+local function win(p) return (p:gsub("/", "\\")) end
+sh('mkdir "' .. win(OUT) .. '\\var" 2>nul')
+if not NODATA then sh('mkdir "' .. win(OUT) .. '\\data3" 2>nul') end
+-- счета прежнего формата - до загрузки: их должен подхватить переезд
+for n, c in SCRIPT:gmatch("old:([%w_]+):(%d+)") do
+	sh('mkdir "' .. win(OUT) .. '\\var\\wallet" 2>nul')
+	local f = assert(io.open(OUT .. "/var/wallet/" .. n, "wb"))
+	f:write(c)
+	f:close()
+end
 
 -- ------------------------------------------------------------------ unicode
 
@@ -156,50 +170,70 @@ end
 
 -- ------------------------------------------------------------------ диск
 
-local function real(path)
+local function mkfs(addr, real)
+	local fs = { type = "filesystem", address = addr }
+	local handles, nextH = {}, 1
+	function fs.exists(p)
+		local f = io.open(real(p), "rb")
+		if f then f:close() return true end
+		return os.rename(real(p), real(p)) and true or false
+	end
+	function fs.size(p)
+		local f = io.open(real(p), "rb")
+		if not f then return 0 end
+		local n = f:seek("end")
+		f:close()
+		return n
+	end
+	function fs.makeDirectory(p) sh('mkdir "' .. win(real(p)) .. '" 2>nul') return true end
+	function fs.remove(p) return os.remove(real(p)) and true or false end
+	function fs.rename(a, b) return os.rename(real(a), real(b)) and true or false end
+	function fs.list(p)
+		local out = {}
+		for _, kind in ipairs({ "/ad", "/a-d" }) do
+			local h = io.popen('dir /b ' .. kind .. ' "' .. win(real(p)) .. '" 2>nul')
+			for l in h:lines() do out[#out + 1] = kind == "/ad" and l .. "/" or l end
+			h:close()
+		end
+		return out
+	end
+	function fs.lastModified() return os.time() * 1000 end
+	function fs.spaceTotal() return 4096 * 1024 end
+	function fs.spaceUsed() return 0 end
+	function fs.isReadOnly() return false end
+	function fs.open(p, mode)
+		local m = ({ r = "rb", w = "wb", a = "ab" })[mode or "r"]
+		local f = io.open(real(p), m)
+		if not f then return nil, p end
+		local h = nextH
+		nextH = nextH + 1
+		handles[h] = { f = f, path = p }
+		return h
+	end
+	function fs.read(h, n)
+		local s = handles[h].f:read(math.min(n, MAXREAD))
+		return s
+	end
+	function fs.seek(h, whence, off) return handles[h].f:seek(whence, off) end
+	function fs.write(h, s)
+		if handles[h].path:find("crash") then io.stderr:write("\n!!! ПАДЕНИЕ:\n" .. s .. "\n") end
+		handles[h].f:write(s)
+		return true
+	end
+	function fs.close(h) handles[h].f:close() handles[h] = nil end
+	return fs
+end
+
+-- загрузочный: сам каталог shopos/, только /var - в папку вывода
+local fs = mkfs("disk-0", function(path)
 	path = path:gsub("^/+", "")
 	if path == "var" or path:match("^var/") then return OUT .. "/" .. path end
 	return path == "" and "." or path
-end
-
-local fs = { type = "filesystem", address = "disk-0" }
-local handles, nextH = {}, 1
-function fs.exists(p)
-	local f = io.open(real(p), "rb")
-	if f then f:close() return true end
-	return os.rename(real(p), real(p)) and true or false
-end
-function fs.size(p)
-	local f = io.open(real(p), "rb")
-	if not f then return 0 end
-	local n = f:seek("end")
-	f:close()
-	return n
-end
-function fs.makeDirectory(p) sh('mkdir "' .. real(p):gsub("/", "\\") .. '" 2>nul') return true end
-function fs.remove(p) return os.remove(real(p)) and true or false end
-function fs.rename(a, b) return os.rename(real(a), real(b)) and true or false end
-function fs.list() return {} end
-function fs.open(p, mode)
-	local m = ({ r = "rb", w = "wb", a = "ab" })[mode or "r"]
-	local f = io.open(real(p), m)
-	if not f then return nil, p end
-	local h = nextH
-	nextH = nextH + 1
-	handles[h] = { f = f, path = p }
-	return h
-end
-function fs.read(h, n)
-	local s = handles[h].f:read(math.min(n, MAXREAD))
-	return s
-end
-function fs.seek(h, whence, off) return handles[h].f:seek(whence, off) end
-function fs.write(h, s)
-	if handles[h].path:find("crash") then io.stderr:write("\n!!! ПАДЕНИЕ:\n" .. s .. "\n") end
-	handles[h].f:write(s)
-	return true
-end
-function fs.close(h) handles[h].f:close() handles[h] = nil end
+end)
+-- диск данных: пустой жёсткий диск, вся его ФС - в <папка>/data3
+local data3 = not NODATA and mkfs("disk-3", function(path)
+	return OUT .. "/data3/" .. path:gsub("^/+", "")
+end)
 
 -- ------------------------------------------------------------------ МЭ и PIM
 
@@ -242,6 +276,13 @@ addNet("IC2:itemArmorNanoChestplate", 3, 1, "c03")
 addNet("IC2:itemArmorNanoChestplate", 26, 2, "c26")
 addNet("IC2:itemBatCrystal", 1, 3, "b01")
 addNet("minecraft:diamond_pickaxe", 700, 1)
+-- крайние меты: у выгрузки на них свои записи (кванты :27 - разряжен,
+-- кирка :1561 - сломана), товар всё равно один с остальными
+addNet("IC2:itemArmorQuantumChestplate", 1, 2, "q01")
+addNet("IC2:itemArmorQuantumChestplate", 27, 2, "q27")
+addNet("minecraft:diamond_pickaxe", 1561, 1)
+-- за ресурсы не продаётся - только за деньги
+addNet("IC2:itemOreIridium", 0, 5)
 for _, key in ipairs((readCatalogKeys(40))) do
 	local id, dmg = key:match("^(.+):(%d+)$")
 	if not id or not id:find(":") then id, dmg = key, 0 end
@@ -251,7 +292,7 @@ end
 local player
 local evil = false         -- игрок подменяет стак монет между проверкой и pushItem
 local inv = {}             -- слот -> { id, dmg, qty }
-local SLOTS = 36
+local SLOTS = 40          -- 36 инвентаря и 4 брони, как у PIM в игре
 
 local function slotData(s)
 	return s and { id = s.id, dmg = s.dmg, qty = s.qty, name = s.id, max_size = 64 } or nil
@@ -265,15 +306,18 @@ function me.getAvailableItems()
 	end
 	return out
 end
-function me.exportItem(fp, side, n)
+function me.exportItem(fp, side, n, into)
 	assert(side == "UP", "выдача не в ту сторону: " .. tostring(side))
+	-- как в игре: без номера слота МЭ кладёт куда влезет, и в броню тоже
+	local lo, hi = 1, SLOTS
+	if into then lo, hi = into, into end
 	for _, it in ipairs(net) do
 		local f = it.fingerprint
 		if f.id == fp.id and f.dmg == fp.dmg and f.nbt_hash == fp.nbt_hash and it.size > 0 then
 			local want = math.min(n, it.size, 64)
 			-- докладываем в неполные стопки, потом в пустые слоты
 			local moved = 0
-			for s = 1, SLOTS do
+			for s = lo, hi do
 				local st = inv[s]
 				if st and st.id == f.id and st.dmg == f.dmg and st.qty < 64 then
 					local k = math.min(64 - st.qty, want - moved)
@@ -282,7 +326,7 @@ function me.exportItem(fp, side, n)
 				end
 				if moved >= want then break end
 			end
-			for s = 1, SLOTS do
+			for s = lo, hi do
 				if moved >= want then break end
 				if not inv[s] then
 					local k = math.min(64, want - moved)
@@ -310,7 +354,8 @@ function pim.pushItem(dir, s, n)
 	assert(dir == "DOWN", "приём не в ту сторону: " .. tostring(dir))
 	local st = inv[s]
 	if not st then return 0 end
-	if evil and st.id == "customnpcs:npcMoney" then
+	-- обман: в миг приёма в слоте уже алмазы - вместо монет или ресурса
+	if evil and st.id ~= "minecraft:diamond" then
 		st = { id = "minecraft:diamond", dmg = 0, qty = st.qty }
 		inv[s] = st
 	end
@@ -330,6 +375,7 @@ end
 
 local comps = { ["gpu-0"] = gpu, ["screen-0"] = { type = "screen" }, ["disk-0"] = fs,
                 ["me-0"] = me, ["pim-0"] = pim }
+if data3 then comps["disk-3"] = data3 end
 
 local component = {}
 function component.list(kind)
@@ -342,12 +388,22 @@ function component.proxy(a) return comps[a] end
 function component.invoke(a, m, ...) return comps[a][m](...) end
 
 local function report()
-	local st = {}
-	for s = 1, SLOTS do if inv[s] then st[#st + 1] = inv[s].id .. ":" .. inv[s].dmg .. "x" .. inv[s].qty end end
+	local st, armor = {}, {}
+	for s = 1, SLOTS do
+		if inv[s] then
+			local t = s > 36 and armor or st
+			t[#t + 1] = inv[s].id .. ":" .. inv[s].dmg .. "x" .. inv[s].qty
+		end
+	end
 	print("инвентарь: " .. (#st > 0 and table.concat(st, "  ") or "пусто"))
-	local f = io.open(OUT .. "/var/wallet/Steve", "rb")
-	print("счёт Steve: " .. (f and f:read("a") or "нет") .. " (сотых)")
-	if f then f:close() end
+	if #armor > 0 then print("СЛОТЫ БРОНИ: " .. table.concat(armor, "  ")) end
+	for _, n in ipairs({ "Steve", "Alex", "Fatic" }) do
+		local f = io.open((NODATA and OUT .. "/var/wallet/" or OUT .. "/data3/wallet/") .. n, "rb")
+		if f then
+			print(("счёт %s: %s (сотых: деньги ресурсы)"):format(n, f:read("a")))
+			f:close()
+		end
+	end
 end
 
 local computer = {}
@@ -355,6 +411,7 @@ function computer.uptime() return now end
 function computer.freeMemory() return 512 * 1024 end
 function computer.totalMemory() return 1024 * 1024 end
 function computer.getBootAddress() return "disk-0" end
+function computer.tmpAddress() return "tmp-0" end
 function computer.pushSignal(...) table.insert(queue, 1, table.pack(...)) end
 function computer.pullSignal(timeout)
 	now = now + 0.05
@@ -375,31 +432,45 @@ function computer.pullSignal(timeout)
 	return table.unpack(ev, 1, ev.n)
 end
 
+local cur = "Steve"        -- кто сейчас на PIM: от него клики и клавиши
 for part in SCRIPT:gmatch("[^,]+") do
 	local a = {}
 	for x in part:gmatch("[^:]+") do a[#a + 1] = x end
 	local k = a[1]
 	if k == "on" then
+		cur = a[2]
 		queue[#queue + 1] = { fn = function() player = a[2] end }
 		queue[#queue + 1] = table.pack("player_on", a[2])
 	elseif k == "off" then
 		queue[#queue + 1] = { fn = function() player = nil end }
 		queue[#queue + 1] = table.pack("player_off", "pim-0")
 	elseif k == "touch" then
-		queue[#queue + 1] = table.pack("touch", "screen-0", tonumber(a[2]), tonumber(a[3]), 0, a[4] or player or "Steve")
+		queue[#queue + 1] = table.pack("touch", "screen-0", tonumber(a[2]), tonumber(a[3]), 0, a[4] or cur)
 	elseif k == "scroll" then
-		queue[#queue + 1] = table.pack("scroll", "screen-0", tonumber(a[2]), tonumber(a[3]), tonumber(a[4]), "Steve")
+		queue[#queue + 1] = table.pack("scroll", "screen-0", tonumber(a[2]), tonumber(a[3]), tonumber(a[4]), cur)
 	elseif k == "type" then
-		for _, c in utf8.codes(a[2]) do queue[#queue + 1] = table.pack("key_down", "kb-0", c, 0, "Steve") end
+		for _, c in utf8.codes(a[2]) do queue[#queue + 1] = table.pack("key_down", "kb-0", c, 0, cur) end
 	elseif k == "key" then
-		queue[#queue + 1] = table.pack("key_down", "kb-0", 0, tonumber(a[2]), "Steve")
+		queue[#queue + 1] = table.pack("key_down", "kb-0", 0, tonumber(a[2]), cur)
 	elseif k == "coins" then
 		queue[#queue + 1] = { fn = function()
 			local left = tonumber(a[2])
-			for s = 1, SLOTS do
+			for s = 1, 36 do
 				if left <= 0 then break end
 				if not inv[s] then
 					inv[s] = { id = "customnpcs:npcMoney", dmg = 0, qty = math.min(64, left) }
+					left = left - inv[s].qty
+				end
+			end
+		end }
+	elseif k == "give" then
+		-- give:мод:имя:мета:N - в свободные слоты инвентаря стопками по 64
+		queue[#queue + 1] = { fn = function()
+			local id, dmg, left = a[2] .. ":" .. a[3], tonumber(a[4]), tonumber(a[5])
+			for s = 1, 36 do
+				if left <= 0 then break end
+				if not inv[s] then
+					inv[s] = { id = id, dmg = dmg, qty = math.min(64, left) }
 					left = left - inv[s].qty
 				end
 			end
@@ -413,7 +484,7 @@ for part in SCRIPT:gmatch("[^,]+") do
 		-- занять N слотов чем попало: проверка выдачи в тесный инвентарь
 		queue[#queue + 1] = { fn = function()
 			local left = tonumber(a[2])
-			for s = 1, SLOTS do
+			for s = 1, 36 do
 				if left <= 0 then break end
 				if not inv[s] then inv[s] = { id = "minecraft:stone", dmg = 0, qty = 64 } left = left - 1 end
 			end

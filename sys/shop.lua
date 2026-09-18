@@ -1,20 +1,27 @@
--- shop - магазин: витрина из МЭ, цены из выгрузки, счёт монетами.
+-- shop - магазин: витрина из МЭ, цены из выгрузки, два счёта.
 --
 -- Как это работает для игрока:
---   1. встал на PIM - магазин узнал ник и показал его счёт;
---   2. положил в инвентарь монеты customnpcs:npcMoney и нажал «ПОПОЛНИТЬ» -
---      монеты ушли в МЭ, на счёт легла их стоимость;
---   3. нашёл предмет поиском или во вкладке мода, выбрал количество,
---      «КУПИТЬ» - предмет пришёл из МЭ в инвентарь, со счёта списана цена;
---   4. «СНЯТЬ» - деньги со счёта возвращаются монетами из МЭ.
+--   1. встал на PIM - магазин узнал ник и показал его счета;
+--   2. «ПОПОЛНИТЬ» - монеты customnpcs:npcMoney из инвентаря уходят в МЭ,
+--      на денежный счёт ложится их стоимость;
+--   3. «СКУПКА» - ресурсы из списка скупки (железо, золото…) уходят в МЭ,
+--      на ресурсный счёт ложится их цена из выгрузки по курсу скупки;
+--   4. нашёл предмет поиском или во вкладке мода, выбрал количество,
+--      «КУПИТЬ ЗА ДЕНЬГИ» или «КУПИТЬ ЗА РЕСУРСЫ» - предмет пришёл из МЭ в
+--      инвентарь, с выбранного счёта списана цена. Что-то (иридий) за
+--      ресурсы не продаётся;
+--   5. «СНЯТЬ» - деньги со счёта возвращаются монетами из МЭ. Ресурсный
+--      счёт не снимается никак.
+-- Владелец (admins в конфиге) попадает в свою панель, см. admin.lua.
 --
 -- Экран устроен как поиск картинок: сверху строка поиска, под ней вкладки
 -- модов с числом найденного, ниже сетка карточек во всю ширину.
 --
--- Деньги трогают три операции, и у всех один порядок: проверить, кто стоит
--- на PIM, записать изменение счёта на диск, двигать предметы, недоданное
--- вернуть на счёт. Пополнение зачисляет не то, что ушло из инвентаря, а то,
--- на сколько выросло число монет в МЭ.
+-- Деньги трогают четыре операции, и у всех один порядок: проверить, кто
+-- стоит на PIM, записать изменение счёта на диск, двигать предметы,
+-- недоданное вернуть на счёт. Приём (монеты, ресурсы) зачисляет не то, что
+-- ушло из инвентаря, а то, на сколько выросло число этих предметов в МЭ, и
+-- до приёма проверяет, что счёт вообще записывается.
 
 local computer, unicode = computer, unicode
 local root = require("root")
@@ -22,6 +29,8 @@ local gfx = require("gfx")
 local catalog = require("catalog")
 local storage = require("storage")
 local wallet = require("wallet")
+local rules = require("rules")
+local admin = require("admin")
 
 local floor, ceil, max, min = math.floor, math.ceil, math.max, math.min
 local fill, text, pad, clip, button = gfx.fill, gfx.text, gfx.pad, gfx.clip, gfx.button
@@ -39,12 +48,20 @@ if COIN[1] then COIN = COIN[1] end
 if not COIN.id then COIN = { id = "customnpcs:npcMoney", dmg = 0 } end
 COIN.dmg = COIN.dmg or 0
 local COIN_VALUE = cfg.coinValue or COIN.value or 1   -- монет счёта за штуку
-local RATE = (cfg.rate or 1) * (cfg.markup or 1)      -- монет за единицу цены
+local BASE = cfg.rate or 1                            -- монет за единицу цены
+local RATE = BASE * (cfg.markup or 1)                 -- то же с наценкой
 local MODS = cfg.modNames or {}
 local SIGN = cfg.sign or "$"
+local RES_SIGN = cfg.resSign or "рес"
 -- продавать ли стаки с NBT (броня и инструменты с зарядом, зачарованное) по
 -- цене обычного предмета из выгрузки
 local SELL_NBT = cfg.sellNbt ~= false
+-- кто, встав на PIM, попадает в панель владельца
+local ADMINS = {}
+for _, n in ipairs(cfg.admins or { "Fatic" }) do ADMINS[n] = true end
+
+rules.init(cfg)
+wallet.zone(cfg.timeZone or 3)
 
 local W, H = gfx.W, gfx.H
 
@@ -75,12 +92,12 @@ local cat, catErr = catalog.open(cfg.catalog or "/data/catalog.bin")
 if not cat and cfg.catalog then cat, catErr = catalog.open("/data/catalog.bin") end
 
 local nick                -- кто стоит на PIM
-local balance = 0         -- его счёт, в сотых монеты
+local balM, balR = 0, 0   -- его счета в сотых: деньги и ресурсы
 local stock = {}          -- товары в наличии
 local stockErr            -- почему витрина пуста
 local coinsInMe = 0       -- монет в МЭ: столько можно снять
 local view = {
-	screen = "idle",       -- idle | grid | item | cash
+	screen = "idle",       -- idle | grid | item | cash | sell | admin
 	tab = nil,             -- мод или nil - все
 	tabTop = 1,            -- первая видимая вкладка
 	query = "",
@@ -88,6 +105,8 @@ local view = {
 	page = 1,
 	item = nil,
 	qty = 1,
+	inv = nil,             -- слоты игрока на экране скупки
+	sellPage = 1,
 }
 local shown, tabs = {}, {}
 local hits = {}           -- кликабельные области кадра
@@ -100,6 +119,10 @@ local pages = 1
 --- округляется только итог.
 local function unitOf(rec) return rec.price * RATE * 100 end
 
+--- Цена штуки в скупке, в сотых ресурсного счёта: цена выгрузки по курсу
+--- скупки, без наценки магазина.
+local function buyIn(rec) return rec.price * BASE * 100 * rules.rate() / 100 end
+
 --- Итог в сотых: вверх, но хвост меньше 0.05 сотой не считается. Вверх -
 --- чтобы покупка по одной не давала скидку на округлении (штука за 0.014
 --- иначе стоила бы 0.01). Допуск - чтобы кирка за 1.50028 стоила 1.50.
@@ -109,15 +132,29 @@ local function totalOf(e, n)
 end
 
 local function money(cents) return wallet.format(cents) .. " " .. SIGN end
+local function resm(cents) return wallet.format(cents) .. " " .. RES_SIGN end
+local function accounts() return ("счёт %s · %s"):format(money(balM), resm(balR)) end
 
---- Цена за штуку для витрины: то, что спишется за одну. Дешевле сотой -
---- столько знаков, чтобы стало видно цифру: земля 0.00004, а не 0.00.
+--- Меньше сотой - столько знаков, чтобы стало видно цифру: земля 0.00004,
+--- а не 0.00.
+local function tiny(u, sign)
+	local d = 3
+	while d < 8 and u * 10 ^ d < 1 do d = d + 1 end
+	return ("%." .. d .. "f %s"):format(u, sign)
+end
+
+--- Цена за штуку для витрины: то, что спишется за одну.
 local function unitText(e)
 	local u = e.unit / 100
 	if u >= 0.01 then return money(totalOf(e, 1)) end
-	local d = 3
-	while d < 8 and u * 10 ^ d < 1 do d = d + 1 end
-	return ("%." .. d .. "f %s"):format(u, SIGN)
+	return tiny(u, SIGN)
+end
+
+--- Цена штуки в скупке.
+local function buyInText(cents)
+	local u = cents / 100
+	if u >= 0.01 then return ("%.2f %s"):format(u, RES_SIGN) end
+	return tiny(u, RES_SIGN)
 end
 
 local function num(n)
@@ -129,6 +166,19 @@ end
 
 local function modOf(id) return id:match("^([^:]+)") or id end
 local function modName(m) return MODS[m] or m end
+local function labelOf(rec) return rec.label ~= "" and rec.label or rec.key end
+
+--- Запись каталога для предмета. У вещей с износом запись без меты
+--- главнее: у выгрузки есть свои записи и на крайние меты (разряженный
+--- квант :27, сломанная кирка :1561), и по ним вышла бы вторая карточка
+--- того же товара.
+local function recOf(id, dmg)
+	if dmg ~= 0 then
+		local base = cat:get(id)
+		if base and base.wear then return base end
+	end
+	return cat:get(catalog.key(id, dmg))
+end
 
 --- Перечитать МЭ: что есть и почём.
 local function refresh()
@@ -161,17 +211,13 @@ local function refresh()
 		if it.id == COIN.id and it.dmg == COIN.dmg then
 			if not it.nbt then coins = coins + it.size end
 		elseif not it.nbt or SELL_NBT then
-			local rec = cat:get(catalog.key(it.id, it.dmg))
-			if not rec and it.dmg ~= 0 then
-				local base = cat:get(it.id)
-				if base and base.wear then rec = base end
-			end
+			local rec = recOf(it.id, it.dmg)
 			if rec and rec.price > 0 then
 				local e = byKey[rec.key]
 				if not e then
 					e = { key = rec.key, id = it.id, rec = rec, unit = unitOf(rec), size = 0,
 					      variants = {}, mod = modOf(it.id) }
-					e.label = rec.label ~= "" and rec.label or rec.key
+					e.label = labelOf(rec)
 					e.low = unicode.lower(e.label)
 					byKey[rec.key] = e
 					out[#out + 1] = e
@@ -263,7 +309,8 @@ local CH = IH + 3         -- иконка с полем сверху, назва
 local GAP = 3
 
 --- Карточка как в поиске картинок: картинка, на ней плашка с количеством,
---- под ней название, ниже цена и откуда предмет.
+--- под ней название, ниже цена и откуда предмет. У товаров только за
+--- деньги вместо мода - пометка об этом.
 local function drawCard(e, x, y)
 	fill(x, y, CW, CH, C.card)
 	drawIcon(e, x + floor((CW - IW) / 2), y + 1, C.card)
@@ -273,8 +320,10 @@ local function drawCard(e, x, y)
 	local price = unitText(e)
 	local room = CW - 3 - ulen(price)
 	text(x + 1, y + IH + 2, price, C.gold, C.card)
+	local only = rules.moneyOnly(e.key)
+	local tag = only and ("только за " .. SIGN) or modName(e.mod)
 	if room >= 3 then
-		text(x + CW - 1 - min(room, ulen(modName(e.mod))), y + IH + 2, clip(modName(e.mod), room), C.faint, C.card)
+		text(x + CW - 1 - min(room, ulen(tag)), y + IH + 2, clip(tag, room), only and C.gold or C.faint, C.card)
 	end
 end
 
@@ -282,18 +331,23 @@ end
 
 local SX = #TITLE + 6     -- где начинается строка поиска
 
+--- Строка поиска. В админке она ищет игрока или запись журнала.
 local function drawSearch(x, w)
+	if w < 12 then return end
+	local adm = view.screen == "admin"
+	local q = adm and admin.query() or view.query
 	fill(x, 1, w, 3, C.field)
 	-- клик по строке с любого экрана ведёт к выдаче; крестик добавлен
 	-- позже и потому перекрывает её (клик ищется с конца)
-	hit(x, 1, w, 3, function() if view.screen ~= "grid" then shop.back() end end)
+	if not adm then hit(x, 1, w, 3, function() if view.screen ~= "grid" then shop.back() end end) end
 	text(x + 2, 2, "⌕", C.white, C.field)
-	if view.query == "" then
-		text(x + 5, 2, clip("Найти предмет - просто печатайте", w - 8), C.dim, C.field)
+	if q == "" then
+		local hint = adm and "Игрок или запись журнала - просто печатайте" or "Найти предмет - просто печатайте"
+		text(x + 5, 2, clip(hint, w - 8), C.dim, C.field)
 	else
-		text(x + 5, 2, clip(view.query, w - 12) .. "▏", C.white, C.field)
+		text(x + 5, 2, clip(q, w - 12) .. "▏", C.white, C.field)
 		text(x + w - 4, 2, "×", C.white, C.field)
-		hit(x + w - 6, 1, 6, 3, function() shop.search("") end)
+		hit(x + w - 6, 1, 6, 3, function() if adm then admin.clear() else shop.search("") end end)
 	end
 end
 
@@ -302,17 +356,30 @@ local function drawHeader()
 	if view.screen == "idle" then return end    -- там название крупно
 	text(3, 2, TITLE, C.gold, C.panel)
 	if not nick then return end
-	-- справа налево: ПОПОЛНИТЬ, СНЯТЬ, счёт, ник
+	-- справа налево: ПОПОЛНИТЬ, СКУПКА, СНЯТЬ, АДМИН, ресурсы, деньги, ник
 	local bx = W - 14
 	button(bx, 1, 15, 3, "ПОПОЛНИТЬ", C.black, C.green)
 	hit(bx, 1, 15, 3, function() shop.deposit() end)
+	bx = bx - 11
+	button(bx, 1, 10, 3, "СКУПКА", C.black, C.accent)
+	hit(bx, 1, 10, 3, function() shop.openSell() end)
 	bx = bx - 10
 	button(bx, 1, 9, 3, "СНЯТЬ", C.text, C.line)
 	hit(bx, 1, 9, 3, function() shop.openCash() end)
-	local bal = money(balance)
-	local x = bx - 2 - max(ulen(bal), 4)
-	text(x, 1, "счёт", C.dim, C.panel)
-	text(x, 2, bal, C.gold, C.panel)
+	if ADMINS[nick] then
+		bx = bx - 10
+		local on = view.screen == "admin"
+		button(bx, 1, 9, 3, "АДМИН", on and C.black or C.text, on and C.gold or C.blue)
+		hit(bx, 1, 9, 3, function() shop.openAdmin() end)
+	end
+	local r = resm(balR)
+	local x = bx - 2 - max(ulen(r), 7)
+	text(x, 1, "ресурсы", C.dim, C.panel)
+	text(x, 2, r, C.accent, C.panel)
+	local m = money(balM)
+	x = x - 2 - max(ulen(m), 6)
+	text(x, 1, "деньги", C.dim, C.panel)
+	text(x, 2, m, C.gold, C.panel)
 	local nx = x - 2 - max(ulen(nick), 5)
 	text(nx, 1, "игрок", C.dim, C.panel)
 	text(nx, 2, nick, C.text, C.panel)
@@ -321,11 +388,14 @@ end
 
 local function footerText()
 	if toast.text and computer.uptime() < toast.till then return toast.text, toast.colour end
+	local ok, why = wallet.ok()
+	if not ok then return why, C.red end
 	if cat and cat:missing() then
 		return "нет второго диска с " .. cat.path2 .. " - часть иконок не видна", C.red
 	end
 	if not nick then return "", C.dim end
-	return "Пополнение: положите монеты в инвентарь и нажмите «ПОПОЛНИТЬ»", C.dim
+	if view.screen == "admin" then return "Панель владельца: всё, что здесь меняется, пишется в журнал", C.dim end
+	return "Монеты - «ПОПОЛНИТЬ»: деньги, их можно снять. Ресурсы - «СКУПКА»: ресурсный счёт, только на покупки", C.dim
 end
 
 local function drawFooter()
@@ -455,15 +525,33 @@ local function backButton()
 	hit(3, 5, 14, 3, function() shop.back() end)
 end
 
+--- Страницы списка: ◀ n / m ▶ с клика.
+local function pager(x, y, page, count, set)
+	if count <= 1 then return end
+	local label = (" %d / %d "):format(page, count)
+	text(x, y, " ◀ ", page > 1 and C.text or C.faint, C.line)
+	text(x + 3, y, label, C.text, C.bg)
+	text(x + 3 + ulen(label), y, " ▶ ", page < count and C.text or C.faint, C.line)
+	hit(x, y, 3, 1, function() set(page - 1) end)
+	hit(x + 3 + ulen(label), y, 3, 1, function() set(page + 1) end)
+end
+
 -- ------------------------------------------------------------------ товар
 
---- Сколько можно купить разом: хватает денег, есть в МЭ и влезет в
---- свободные слоты (по 64: сколько держит стопка, PIM про предмет в МЭ не
---- скажет; лишнее всё равно вернётся деньгами).
+--- Сколько штук можно оплатить счётом have.
+local function affordable(e, have)
+	local n = floor(have / e.unit)
+	while n > 0 and totalOf(e, n) > have do n = n - 1 end
+	return n
+end
+
+--- Сколько можно купить разом: хватает денег или ресурсов, есть в МЭ и
+--- влезет в свободные слоты (по 64: сколько держит стопка, PIM про предмет
+--- в МЭ не скажет; лишнее всё равно вернётся на счёт).
 local function maxQty(e)
-	local afford = floor(balance / e.unit)
-	while afford > 0 and totalOf(e, afford) > balance do afford = afford - 1 end
-	return max(0, min(e.size, afford, 64 * store:freeSlots()))
+	local best = affordable(e, balM)
+	if not rules.moneyOnly(e.key) then best = max(best, affordable(e, balR)) end
+	return max(0, min(e.size, best, 64 * store:freeSlots()))
 end
 
 local function drawItem()
@@ -483,37 +571,57 @@ local function drawItem()
 
 	local x = iw + 14
 	local wtxt = W - x - 2
+	local only = rules.moneyOnly(e.key)
 	text(x, 10, clip(e.label, wtxt), C.white, C.bg)
 	text(x, 11, clip(modName(e.mod) .. "  ·  " .. e.key, wtxt), C.faint, C.bg)
+	local ny = 12
 	if e.mixed then
-		text(x, 12, clip("экземпляры с разным зарядом или износом - один товар; выдаются начиная с самых целых", wtxt), C.accent, C.bg)
+		text(x, ny, clip("экземпляры с разным зарядом или износом - один товар; выдаются начиная с самых целых", wtxt), C.accent, C.bg)
+		ny = ny + 1
 	end
+	if only then text(x, ny, clip("продаётся только за деньги - за ресурсы нельзя", wtxt), C.gold, C.bg) end
 
-	local col = floor(wtxt / 3)
+	local col = floor(wtxt / 4)
 	text(x, 14, "цена за штуку", C.dim, C.bg)
-	text(x, 15, unitText(e), C.gold, C.bg)
+	text(x, 15, unitText(e), C.white, C.bg)
 	text(x + col, 14, "в наличии", C.dim, C.bg)
 	text(x + col, 15, num(e.size) .. " шт.", C.text, C.bg)
-	text(x + col * 2, 14, "на счету", C.dim, C.bg)
-	text(x + col * 2, 15, money(balance), C.gold, C.bg)
+	text(x + col * 2, 14, "деньги", C.dim, C.bg)
+	text(x + col * 2, 15, money(balM), C.gold, C.bg)
+	text(x + col * 3, 14, "ресурсы", C.dim, C.bg)
+	text(x + col * 3, 15, resm(balR), C.accent, C.bg)
 
 	text(x, 18, "количество", C.dim, C.bg)
 	drawAmount(x, 19, view.qty, { 1, 10, 64 }, shop.setQty, function() return maxQty(e) end)
 
 	local total = totalOf(e, view.qty)
 	text(x, 24, "итого", C.dim, C.bg)
-	text(x, 25, money(total), C.gold, C.bg)
-	local ok = view.qty >= 1 and view.qty <= e.size and total <= balance
-	if total > balance then
-		text(x, 26, "не хватает " .. money(total - balance) .. " - пополните счёт", C.red, C.bg)
-	elseif view.qty > e.size then
-		text(x, 26, "в наличии только " .. num(e.size) .. " шт.", C.red, C.bg)
-	else
-		text(x, 26, "останется " .. money(balance - total), C.dim, C.bg)
-	end
+	text(x, 25, only and money(total) or (money(total) .. "  или  " .. resm(total)), C.white, C.bg)
+	local inStock = view.qty >= 1 and view.qty <= e.size
+	if not inStock then text(x, 26, "в наличии только " .. num(e.size) .. " шт.", C.red, C.bg) end
 
-	button(x, 29, 32, 5, "КУПИТЬ", ok and C.black or C.faint, ok and C.green or C.card)
-	if ok then hit(x, 29, 32, 5, function() shop.buy() end) end
+	-- кнопка оплаты с одного счёта, под ней - хватает ли
+	local function pay(bx, kind)
+		local have = kind == "r" and balR or balM
+		local fmt = kind == "r" and resm or money
+		local ok = inStock and total <= have
+		local back = kind == "r" and C.accent or C.green
+		button(bx, 28, 32, 5, kind == "r" and "КУПИТЬ ЗА РЕСУРСЫ" or "КУПИТЬ ЗА ДЕНЬГИ",
+			ok and C.black or C.faint, ok and back or C.card)
+		if ok then hit(bx, 28, 32, 5, function() shop.buy(kind) end) end
+		if total > have then
+			text(bx, 34, clip("не хватает " .. fmt(total - have), 32), C.red, C.bg)
+		else
+			text(bx, 34, clip("останется " .. fmt(have - total), 32), C.dim, C.bg)
+		end
+	end
+	pay(x, "m")
+	if only then
+		button(x + 34, 28, 32, 5, "ЗА РЕСУРСЫ НЕЛЬЗЯ", C.faint, C.card)
+		text(x + 34, 34, "этот товар - только за деньги", C.dim, C.bg)
+	else
+		pay(x + 34, "r")
+	end
 end
 
 -- ------------------------------------------------------------------ снятие
@@ -522,7 +630,7 @@ local function coinCents() return COIN_VALUE * 100 end
 
 --- Сколько монет можно снять: хватает на счету, есть в МЭ, влезет.
 local function maxCash()
-	return max(0, min(floor(balance / coinCents()), coinsInMe, 64 * store:freeSlots()))
+	return max(0, min(floor(balM / coinCents()), coinsInMe, 64 * store:freeSlots()))
 end
 
 local function drawCash()
@@ -531,9 +639,10 @@ local function drawCash()
 	local x = 22
 	text(x, 10, "Снять деньги со счёта", C.white, C.bg)
 	text(x, 11, "выдаются монетами " .. COIN.id .. ", одна монета - " .. money(coinCents()), C.faint, C.bg)
+	text(x, 12, "ресурсный счёт не снимается - его можно только потратить на покупки", C.faint, C.bg)
 
-	text(x, 14, "на счету", C.dim, C.bg)
-	text(x, 15, money(balance), C.gold, C.bg)
+	text(x, 14, "деньги на счету", C.dim, C.bg)
+	text(x, 15, money(balM), C.gold, C.bg)
 	text(x + 30, 14, "монет в магазине", C.dim, C.bg)
 	text(x + 30, 15, num(coinsInMe), C.text, C.bg)
 
@@ -543,16 +652,102 @@ local function drawCash()
 	local cost = view.qty * coinCents()
 	text(x, 24, "спишется", C.dim, C.bg)
 	text(x, 25, money(cost), C.gold, C.bg)
-	local ok = view.qty >= 1 and cost <= balance and view.qty <= coinsInMe
-	if cost > balance then
+	local ok = view.qty >= 1 and cost <= balM and view.qty <= coinsInMe
+	if cost > balM then
 		text(x, 26, "на счету столько нет", C.red, C.bg)
 	elseif view.qty > coinsInMe then
 		text(x, 26, "в магазине только " .. num(coinsInMe) .. " монет", C.red, C.bg)
 	else
-		text(x, 26, "останется " .. money(balance - cost), C.dim, C.bg)
+		text(x, 26, "останется " .. money(balM - cost), C.dim, C.bg)
 	end
 	button(x, 29, 32, 5, "СНЯТЬ", ok and C.black or C.faint, ok and C.green or C.card)
 	if ok then hit(x, 29, 32, 5, function() shop.withdraw() end) end
+end
+
+-- ------------------------------------------------------------------ скупка
+
+--- Что игрок может сдать сейчас: по предмету из инвентаря - сколько и
+--- почём. Слоты читаются при входе на экран и после сдачи.
+local function sellable()
+	local by, out = {}, {}
+	if not (cat and view.inv) then return out end
+	for s = 1, store.slots do
+		local it = view.inv[s]
+		if it and not it.nbt then
+			local rec = recOf(it.id, it.dmg)
+			if rec and rec.price > 0 and rules.accepts(rec.key) then
+				local g = by[rec.key]
+				if not g then
+					g = { label = labelOf(rec), qty = 0, unit = buyIn(rec) }
+					by[rec.key] = g
+					out[#out + 1] = g
+				end
+				g.qty = g.qty + it.qty
+			end
+		end
+	end
+	table.sort(out, function(a, b) return a.label < b.label end)
+	return out
+end
+
+local function drawSell()
+	fill(1, 4, W, H - 4, C.bg)
+	backButton()
+	local L, R = 22, 100
+	text(L, 5, "Скупка ресурсов", C.white, C.bg)
+	text(L, 6, clip(("сданное ложится на ресурсный счёт по %d%% цены: на него покупают, снять его нельзя")
+		:format(rules.rate()), W - L - 1), C.faint, C.bg)
+
+	-- слева: что игрок может сдать сейчас
+	text(L, 9, "у вас в инвентаре", C.dim, C.bg)
+	local have, total = sellable(), 0
+	for i, g in ipairs(have) do
+		local v = g.qty * g.unit
+		total = total + v
+		local y = 10 + i
+		if y <= 38 then
+			text(L, y, pad(g.label, 38), C.text, C.bg)
+			text(L + 39, y, pad("×" .. num(g.qty), 9), C.dim, C.bg)
+			text(L + 49, y, resm(floor(v + 1e-6)), C.accent, C.bg)
+		end
+	end
+	if #have == 0 then
+		text(L, 11, "сдавать нечего: положите в инвентарь что-то из списка справа", C.dim, C.bg)
+	end
+	total = floor(total + 1e-6)
+	text(L, 40, "к зачислению", C.dim, C.bg)
+	text(L, 41, resm(total), C.accent, C.bg)
+	local ok = total > 0
+	button(L, 43, 32, 5, "СДАТЬ ВСЁ", ok and C.black or C.faint, ok and C.accent or C.card)
+	if ok then hit(L, 43, 32, 5, function() shop.sell() end) end
+
+	-- справа: что скупаем и почём, по названию
+	local list = {}
+	for _, k in ipairs(rules.list("res")) do
+		local rec = cat and cat:get(k)
+		list[#list + 1] = { rec = rec and rec.price > 0 and rec or nil, label = rec and labelOf(rec) or k }
+	end
+	table.sort(list, function(a, b) return a.label < b.label end)
+	text(R, 9, "скупаем: " .. #list, C.dim, C.bg)
+	local rows = H - 13
+	local count = max(1, ceil(#list / rows))
+	view.sellPage = max(1, min(view.sellPage, count))
+	for i = 1, rows do
+		local it = list[(view.sellPage - 1) * rows + i]
+		if not it then break end
+		local y = 10 + i
+		if it.rec then
+			text(R, y, pad(it.label, 40), C.text, C.bg)
+			text(R + 41, y, buyInText(buyIn(it.rec)) .. " за шт.", C.accent, C.bg)
+		else
+			text(R, y, pad(it.label, 40), C.faint, C.bg)
+			text(R + 41, y, "нет цены - не берём", C.faint, C.bg)
+		end
+	end
+	pager(R, H - 1, view.sellPage, count, function(p)
+		view.sellPage = p
+		shop.draw()
+	end)
 end
 
 -- ------------------------------------------------------------------ ожидание
@@ -579,11 +774,13 @@ local function drawIdle()
 	text(floor((W - ulen(t)) / 2) + 1, cy + 2, t, C.gold, C.panel)
 	local msg = "Встаньте на PIM, чтобы войти"
 	text(floor((W - ulen(msg)) / 2) + 1, cy + 7, msg, C.text, C.bg)
-	local sub = "оплата монетами " .. COIN.id
+	local sub = "оплата монетами " .. COIN.id .. " или ресурсами из скупки"
 	text(floor((W - ulen(sub)) / 2) + 1, cy + 8, sub, C.faint, C.bg)
 
-	if stockErr then
-		text(floor((W - ulen(stockErr)) / 2) + 1, cy + 11, stockErr, C.red, C.bg)
+	local _, why = wallet.ok()
+	local err = why or stockErr
+	if err then
+		text(floor((W - ulen(err)) / 2) + 1, cy + 11, err, C.red, C.bg)
 	elseif #teaser > 0 then
 		local n = #teaser
 		local x0 = floor((W - (n * (CW + GAP) - GAP)) / 2) + 1
@@ -601,6 +798,8 @@ function shop.draw()
 	if view.screen == "idle" then drawIdle()
 	elseif view.screen == "item" then drawItem()
 	elseif view.screen == "cash" then drawCash()
+	elseif view.screen == "sell" then drawSell()
+	elseif view.screen == "admin" then admin.draw()
 	else drawGrid() end
 	-- шапка последней: её кнопки поверх всего остального
 	drawHeader()
@@ -663,7 +862,7 @@ function shop.setQty(n)
 end
 
 function shop.openCash()
-	balance = wallet.get(nick)
+	balM, balR = wallet.get(nick)
 	refresh()
 	view.screen, view.item, view.qty = "cash", nil, 1
 	shop.draw()
@@ -671,6 +870,21 @@ end
 
 function shop.setCash(n)
 	view.qty = max(1, floor(n))
+	shop.draw()
+end
+
+function shop.openSell()
+	balM, balR = wallet.get(nick)
+	view.inv = store:slotsOfPlayer()
+	if cat then cat:resolve(rules.list("res")) end
+	view.screen, view.item, view.sellPage = "sell", nil, 1
+	shop.draw()
+end
+
+function shop.openAdmin()
+	if not ADMINS[nick] then return end
+	admin.open()
+	view.screen, view.item = "admin", nil
 	shop.draw()
 end
 
@@ -697,54 +911,162 @@ local function present()
 	return false
 end
 
+--- Можно ли сейчас трогать деньги: игрок на месте и счета доступны.
+local function ready()
+	if not nick or not present() then return false end
+	local ok, why = wallet.ok()
+	if not ok then shop.say(why, C.red) return false end
+	return true
+end
+
+--- Забрать у игрока стопки без NBT, которые выбирает pick(it) - он
+--- возвращает цену штуки в сотых и название или nil. Возвращает по
+--- каждому предмету, сколько ушло из инвентаря (pushed) и сколько из этого
+--- действительно пришло в МЭ (n); зачислять можно только n.
+local function intake(pick)
+	local slots = store:slotsOfPlayer()
+	local plan, list = {}, {}
+	for s = 1, store.slots do
+		local it = slots[s]
+		if it and not it.nbt then
+			local unit, label = pick(it)
+			if unit then
+				local k = storage.tag(it.id, it.dmg)
+				local g = plan[k]
+				if not g then
+					g = { id = it.id, dmg = it.dmg, unit = unit, label = label, pushed = 0, n = 0, from = {} }
+					plan[k] = g
+					list[#list + 1] = g
+				end
+				g.from[#g.from + 1] = { s, it.qty }
+			end
+		end
+	end
+	if #list == 0 then return list end
+	local before = store:counts()
+	if not before then return nil, "МЭ не отвечает, попробуйте ещё раз" end
+	for _, g in ipairs(list) do
+		for _, sq in ipairs(g.from) do g.pushed = g.pushed + store:push(sq[1], sq[2]) end
+	end
+	-- МЭ-интерфейс переносит принятое в сеть на своём тике: не дошло сразу -
+	-- ещё пара попыток. Сеть так и не ответила - как раньше, по ушедшему
+	local answered = false
+	for _ = 1, 3 do
+		local after = store:counts()
+		if after then
+			answered = true
+			local short = false
+			for k, g in pairs(plan) do
+				g.n = min(g.pushed, max(0, (after[k] or 0) - (before[k] or 0)))
+				if g.n < g.pushed then short = true end
+			end
+			if not short then break end
+		end
+	end
+	for _, g in ipairs(list) do
+		if not answered then g.n = g.pushed end
+		if g.n < g.pushed then
+			wallet.log(("ВНИМАНИЕ %s: %s - из инвентаря ушло %d, в МЭ пришло %d, зачислено %d")
+				:format(nick, g.label, g.pushed, g.n, g.n))
+		end
+	end
+	return list
+end
+
+--- Зачислить принятое: деньги dm и ресурсы dr. Счёт не записался -
+--- принятое уходит игроку обратно: иначе он остался бы и без вещей, и
+--- без денег.
+local function credit(dm, dr, got, what)
+	local m, r = wallet.add(nick, dm, dr)
+	if m then
+		balM, balR = m, r
+		return true
+	end
+	local back = 0
+	for _, g in ipairs(got) do
+		if g.n > 0 then back = back + store:give(g.id, g.dmg, g.n) end
+	end
+	wallet.log(("ВНИМАНИЕ %s: %s - счёт не записался, возвращено %d шт."):format(nick, what, back))
+	note("счёт не записался - всё принятое возвращено", C.red)
+	return false
+end
+
 function shop.deposit()
-	if not nick or not present() then return end
+	if not ready() then return end
+	if not wallet.writable(nick) then shop.say("счёт не записывается - приём остановлен", C.red) return end
 	shop.say("принимаю монеты…", C.dim)
-	local before = store:count(COIN.id, COIN.dmg)
-	if not before then shop.say("МЭ не отвечает, попробуйте ещё раз", C.red) return end
-	local pushed = store:takeAll(COIN.id, COIN.dmg)
-	if pushed <= 0 then
-		shop.say("в инвентаре нет монет " .. COIN.id, C.red)
-		return
-	end
-	-- зачисляем то, что пришло в МЭ, а не то, что ушло из слотов: между
-	-- проверкой слота и сталкиванием игрок может подложить другой стак
-	local after = store:count(COIN.id, COIN.dmg)
-	local coins = after and min(pushed, max(0, after - before)) or pushed
-	if coins < pushed then
-		wallet.log(("%s: ушло из инвентаря %d, монет в МЭ прибавилось %d - зачислено %d")
-			:format(nick, pushed, after - before, coins))
-	end
-	if coins <= 0 then
+	local got, err = intake(function(it)
+		if it.id == COIN.id and it.dmg == COIN.dmg then return coinCents(), "монеты" end
+	end)
+	if not got then shop.say(err, C.red) return end
+	local g = got[1]
+	if not g then shop.say("в инвентаре нет монет " .. COIN.id, C.red) return end
+	if g.pushed <= 0 then
+		note("МЭ не принимает монеты - нет места в сети?", C.red)
+	elseif g.n <= 0 then
 		note("монеты не дошли до МЭ - ничего не зачислено", C.red)
-		refresh()
-		shop.draw()
-		return
+	else
+		local cents = g.n * coinCents()
+		if credit(cents, 0, got, "пополнение") then
+			wallet.log(("%s пополнил: %s монет → +%s  %s"):format(nick, num(g.n), money(cents), accounts()))
+			note(("зачислено %s монет: +%s"):format(num(g.n), money(cents)), C.green)
+		end
 	end
-	local cents = coins * coinCents()
-	balance = wallet.add(nick, cents) or wallet.get(nick)
-	wallet.log(("%s +%d монет (%s), счёт %s"):format(nick, coins, wallet.format(cents), wallet.format(balance)))
-	note(("зачислено %s монет: +%s"):format(num(coins), money(cents)), C.green)
 	refresh()
 	shop.draw()
 end
 
-function shop.buy()
+function shop.sell()
+	if not ready() then return end
+	if not wallet.writable(nick) then shop.say("счёт не записывается - скупка остановлена", C.red) return end
+	shop.say("принимаю ресурсы…", C.dim)
+	local got, err = intake(function(it)
+		if not cat then return nil end
+		local rec = recOf(it.id, it.dmg)
+		if rec and rec.price > 0 and rules.accepts(rec.key) then return buyIn(rec), labelOf(rec) end
+	end)
+	if not got then shop.say(err, C.red) return end
+	if #got == 0 then shop.say("в инвентаре нет ресурсов из списка скупки", C.red) return end
+	local cents, parts = 0, {}
+	for _, g in ipairs(got) do
+		if g.n > 0 then
+			cents = cents + g.n * g.unit
+			parts[#parts + 1] = g.label .. " ×" .. num(g.n)
+		end
+	end
+	cents = floor(cents + 1e-6)
+	if #parts == 0 then
+		note("ресурсы не дошли до МЭ - ничего не зачислено", C.red)
+	elseif credit(0, cents, got, "скупка") then
+		wallet.log(("%s сдал в скупку: %s → +%s  %s"):format(nick, table.concat(parts, ", "), resm(cents), accounts()))
+		note(("сдано: +%s на ресурсный счёт"):format(resm(cents)), C.green)
+	end
+	view.inv = store:slotsOfPlayer()
+	refresh()
+	shop.draw()
+end
+
+--- Купить view.qty штук открытого товара: kind "m" - за деньги, "r" - за
+--- ресурсы.
+function shop.buy(kind)
 	local e = view.item
-	if not (e and nick) or not present() then return end
+	if not e or not ready() then return end
+	if kind == "r" and rules.moneyOnly(e.key) then return end
 	local qty = view.qty
 	local cost = totalOf(e, qty)
-	balance = wallet.get(nick)
-	if cost > balance then shop.draw() return end
+	balM, balR = wallet.get(nick)
+	if cost > (kind == "r" and balR or balM) then shop.draw() return end
 	if store:freeSlots() == 0 then
 		shop.say("инвентарь полон - освободите место", C.red)
 		return
 	end
+	-- с какого счёта: деньги dm или ресурсы dr
+	local function part(v) if kind == "r" then return 0, v end return v, 0 end
 	-- сначала списать и записать на диск, потом выдавать: выключение посреди
 	-- выдачи не должно оставить предмет бесплатным
-	local left = wallet.add(nick, -cost)
-	if not left then shop.say("не удалось списать деньги", C.red) return end
-	balance = left
+	local m, r = wallet.add(nick, part(-cost))
+	if not m then shop.say("не удалось списать", C.red) return end
+	balM, balR = m, r
 	shop.say("выдаю…", C.dim)
 	local sent = 0
 	for _, v in ipairs(e.variants) do
@@ -752,9 +1074,13 @@ function shop.buy()
 		sent = sent + store:give(v.id, v.dmg, min(v.size, qty - sent), v.nbt)
 	end
 	local paid = totalOf(e, sent)
-	if paid < cost then balance = wallet.add(nick, cost - paid) or wallet.get(nick) end
-	wallet.log(("%s купил %s x%d/%d за %s, счёт %s"):format(
-		nick, e.key, sent, qty, wallet.format(paid), wallet.format(balance)))
+	if paid < cost then
+		m, r = wallet.add(nick, part(cost - paid))
+		if m then balM, balR = m, r else balM, balR = wallet.get(nick) end
+	end
+	local fmt = kind == "r" and resm or money
+	wallet.log(("%s купил %s ×%s%s за %s  [%s]  %s"):format(nick, e.label, num(sent),
+		sent < qty and (" из " .. num(qty)) or "", fmt(paid), e.key, accounts()))
 
 	refresh()
 	local now = findStock(e.key)
@@ -765,33 +1091,37 @@ function shop.buy()
 		view.screen, view.item = "grid", nil
 	end
 	if sent == 0 then
-		note("не выдано: нет места или товар кончился, деньги возвращены", C.red)
+		note("не выдано: нет места или товар кончился, счёт не тронут", C.red)
 	elseif sent < qty then
-		note(("выдано %d из %d - на остальное не хватило места, разница возвращена"):format(sent, qty), C.gold)
+		note(("выдано %d из %d - на остальное не хватило места, разница вернулась на счёт"):format(sent, qty), C.gold)
 	else
-		note(("куплено: %s × %s за %s"):format(e.label, num(sent), money(paid)), C.green)
+		note(("куплено: %s × %s за %s"):format(e.label, num(sent), fmt(paid)), C.green)
 	end
 	shop.draw()
 end
 
 function shop.withdraw()
-	if not nick or not present() then return end
+	if not ready() then return end
 	local n = view.qty
 	local cost = n * coinCents()
-	balance = wallet.get(nick)
-	if n < 1 or cost > balance then shop.draw() return end
+	balM, balR = wallet.get(nick)
+	if n < 1 or cost > balM then shop.draw() return end
 	if store:freeSlots() == 0 then
 		shop.say("инвентарь полон - освободите место", C.red)
 		return
 	end
 	-- тот же порядок, что у покупки: списать, выдать, недоданное вернуть
-	local left = wallet.add(nick, -cost)
-	if not left then shop.say("не удалось списать деньги", C.red) return end
-	balance = left
+	local m, r = wallet.add(nick, -cost, 0)
+	if not m then shop.say("не удалось списать деньги", C.red) return end
+	balM, balR = m, r
 	shop.say("выдаю монеты…", C.dim)
 	local sent = store:give(COIN.id, COIN.dmg, n)
-	if sent < n then balance = wallet.add(nick, (n - sent) * coinCents()) or wallet.get(nick) end
-	wallet.log(("%s снял %d/%d монет, счёт %s"):format(nick, sent, n, wallet.format(balance)))
+	if sent < n then
+		m, r = wallet.add(nick, (n - sent) * coinCents(), 0)
+		if m then balM, balR = m, r else balM, balR = wallet.get(nick) end
+	end
+	wallet.log(("%s снял %s монет%s (−%s)  %s"):format(nick, num(sent),
+		sent < n and (" из " .. num(n)) or "", money(sent * coinCents()), accounts()))
 	refresh()
 	view.qty = max(1, min(view.qty, maxCash()))
 	if sent == 0 then
@@ -807,19 +1137,24 @@ end
 local function login(name)
 	if not name or name == nick then return end
 	nick = name
-	balance = wallet.get(nick)
+	balM, balR = wallet.get(nick)
 	view.screen, view.tab, view.tabTop, view.query, view.page, view.item = "grid", nil, 1, "", 1, nil
 	toast.text = nil
-	wallet.log(nick .. " вошёл, счёт " .. wallet.format(balance))
+	wallet.log(("%s вошёл, %s"):format(nick, accounts()))
 	refresh()
+	if ADMINS[nick] then
+		admin.open()
+		view.screen = "admin"
+	end
 	shop.draw()
 end
 
 function logout()
 	if nick then wallet.log(nick .. " вышел") end
-	nick, balance = nil, 0
-	view.screen, view.item, view.query = "idle", nil, ""
+	nick, balM, balR = nil, 0, 0
+	view.screen, view.item, view.query, view.inv = "idle", nil, "", nil
 	toast.text = nil
+	admin.reset()
 	pickTeaser()
 	shop.draw()
 end
@@ -834,6 +1169,23 @@ local function nickFrom(...)
 		end
 	end
 end
+
+-- ------------------------------------------------------------------ админка
+
+admin.init({
+	C = C, W = W, H = H, hit = hit, pager = pager, num = num,
+	money = money, resm = resm, buyIn = buyIn, buyInText = buyInText,
+	store = store, cat = cat, recOf = cat and recOf, labelOf = labelOf,
+	nick = function() return nick end,
+	present = function() return present() end,
+	reload = function() if nick then balM, balR = wallet.get(nick) end end,
+	draw = function() shop.draw() end,
+	say = function(s, colour, secs) shop.say(s, colour, secs) end,
+	toShop = function()
+		view.screen, view.item = "grid", nil
+		shop.draw()
+	end,
+})
 
 -- ------------------------------------------------------------------ цикл
 
@@ -861,7 +1213,14 @@ function handlers.touch(_, x, y, _, who)
 end
 
 function handlers.scroll(_, _, y, dir, who)
-	if not nick or (who and who ~= nick) or view.screen ~= "grid" then return end
+	if not nick or (who and who ~= nick) then return end
+	if view.screen == "admin" then admin.scroll(dir) return end
+	if view.screen == "sell" then
+		view.sellPage = max(1, view.sellPage - dir)
+		shop.draw()
+		return
+	end
+	if view.screen ~= "grid" then return end
 	if y >= 5 and y <= 6 then
 		view.tabTop = max(1, min(#tabs, view.tabTop - dir))
 		shop.draw()
@@ -870,9 +1229,11 @@ function handlers.scroll(_, _, y, dir, who)
 	end
 end
 
---- Печатать можно с любого экрана: буквы сразу идут в поиск.
+--- Печатать можно с любого экрана: буквы сразу идут в поиск. В админке -
+--- в её поиск.
 function handlers.key_down(_, ch, code, who)
 	if not nick or (who and who ~= nick) or view.screen == "idle" then return end
+	if view.screen == "admin" then admin.key(ch, code) return end
 	if code == 14 then                                     -- Backspace
 		if view.screen ~= "grid" then shop.back()
 		elseif view.query ~= "" then shop.search(unicode.sub(view.query, 1, -2)) end

@@ -6,12 +6,16 @@
 -- остатки прежнего ShopOS), <папка>/b - второй. Каждый по 4 МБ, как диск
 -- 3-го уровня: запись сверх объёма отвечает «not enough space». Ещё есть
 -- tmpfs и дискета только для чтения - установщик не должен их выбрать.
--- Ключ установщика "nodisk2" убирает второй диск.
+-- <папка>/d - диск данных магазина с меткой /shopos.data: свободнее
+-- второго, но писать на него установщик не должен никогда.
+-- Ключи стенда: "nodisk2" убирает второй диск, "nodata" - диск данных.
 
 local OUT = assert(arg[1], "папка?")
-local args, nodisk2 = {}, false
+local args, nodisk2, nodata = {}, false, false
 for i = 2, #arg do
-	if arg[i] == "nodisk2" then nodisk2 = true else args[#args + 1] = arg[i] end
+	if arg[i] == "nodisk2" then nodisk2 = true
+	elseif arg[i] == "nodata" then nodata = true
+	else args[#args + 1] = arg[i] end
 end
 
 local function sh(c) os.execute(c .. " >nul 2>nul") end
@@ -82,6 +86,7 @@ local A = mkdisk("aaaa-boot", OUT .. "/a")
 local B = mkdisk("bbbb-second", OUT .. "/b")
 local T = mkdisk("tttt-tmpfs", OUT .. "/t")
 local F = mkdisk("ffff-floppy", OUT .. "/f", true)
+local D = mkdisk("dddd-data", OUT .. "/d")
 
 -- OpenOS ~ 1 МБ и прежний ShopOS: /os и каталог на 2.2 МБ
 A.put("/lib/core.lua", 700 * 1024, "/lib")
@@ -89,9 +94,14 @@ A.put("/bin/sh.lua", 300 * 1024, "/bin")
 A.put("/os/shop.lua", 60 * 1024, "/os")
 A.put("/data/shop.bin", 2200 * 1024)
 A.put("/cfg/shop.cfg", 900)
+-- второй диск чем-то занят, диск данных почти пуст - он «самый свободный»
+B.put("/junk.bin", 64 * 1024)
+D.put("/shopos.data", 40)
+D.put("/wallet/Steve", 10)
 
 local comps = { [A.address] = A, [T.address] = T, [F.address] = F, ["net-0"] = { type = "internet" } }
 if not nodisk2 then comps[B.address] = B end
+if not nodata then comps[D.address] = D end
 
 -- ------------------------------------------------------------------ OpenOS
 
@@ -164,3 +174,4 @@ for _, p in ipairs({ "/init.lua", "/data/catalog.bin", "/os", "/data/shop.bin", 
 	print(("   a%-20s %s"):format(p, A.exists(p) and "есть" or "нет"))
 end
 print(("   b/data/catalog.2.bin      %s"):format(B.exists("/data/catalog.2.bin") and "есть" or "нет"))
+print(("   d: %s, занято %d байт"):format(D.exists("/data") and "ТРОНУТ УСТАНОВЩИКОМ" or "не тронут", D.used))

@@ -76,12 +76,21 @@ local function download(dev, from, to, big)
 	return size
 end
 
+--- Диск данных магазина (счета, журнал) помечен /shopos.data. Установщик
+--- на него не пишет никогда.
+local function isData(d)
+	local ok, has = pcall(d.exists, "/shopos.data")
+	return ok and has
+end
+
 --- Второй диск: указанный --disk2, иначе тот, где часть каталога уже
---- лежит, иначе самый свободный записываемый - не загрузочный и не tmpfs.
+--- лежит, иначе самый свободный записываемый - не загрузочный, не tmpfs и
+--- не диск данных.
 local function secondDisk(path)
 	if opts.disk2 then
 		local d = component.proxy(component.get(opts.disk2) or opts.disk2)
 		if not d or d.type ~= "filesystem" or d.isReadOnly() then die("--disk2 не годится") end
+		if isData(d) then die("--disk2: это диск данных магазина - на него не пишу") end
 		return d
 	end
 	local tmp = computer.tmpAddress and computer.tmpAddress()
@@ -89,7 +98,7 @@ local function secondDisk(path)
 	for addr in component.list("filesystem") do
 		if addr ~= disk.address and addr ~= tmp then
 			local d = component.proxy(addr)
-			if not d.isReadOnly() then
+			if not d.isReadOnly() and not isData(d) then
 				if d.exists(path) then return d end
 				local f = d.spaceTotal() - d.spaceUsed()
 				if not best or f > free then best, free = d, f end
@@ -118,6 +127,30 @@ for _, f in ipairs(manifest.files) do
 	end
 end
 if disk2 then print("второй диск: " .. disk2.address:sub(1, 8)) end
+
+-- диск данных: уже помеченный или тот, что магазин возьмёт при первом
+-- запуске (самый свободный из оставшихся, не дискета)
+do
+	local tmp = computer.tmpAddress and computer.tmpAddress()
+	local marked, spare, free
+	for addr in component.list("filesystem") do
+		local d = component.proxy(addr)
+		if addr ~= disk.address and isData(d) then
+			marked = d
+		elseif addr ~= disk.address and addr ~= tmp and (not disk2 or addr ~= disk2.address)
+			and not d.isReadOnly() and d.spaceTotal() >= 1024 * 1024 then
+			local f = d.spaceTotal() - d.spaceUsed()
+			if not spare or f > free then spare, free = d, f end
+		end
+	end
+	if marked then
+		print("диск данных: " .. marked.address:sub(1, 8) .. " - счета и журнал, не трогаю")
+	elseif spare then
+		print("диск данных: " .. spare.address:sub(1, 8) .. " - магазин возьмёт его при первом запуске")
+	else
+		print("третьего диска нет: счета и журнал будут на загрузочном в /var")
+	end
+end
 
 if opts.dry then
 	for _, f in ipairs(manifest.files) do

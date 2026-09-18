@@ -18,6 +18,21 @@ function D:remove(path) return self.p.remove(path) end
 function D:rename(a, b) return self.p.rename(a, b) end
 function D:list(path) return self.p.list(path) or {} end
 
+--- Свободно байт на диске.
+function D:free()
+	local ok1, total = pcall(self.p.spaceTotal)
+	local ok2, used = pcall(self.p.spaceUsed)
+	if not (ok1 and ok2) then return 0 end
+	return (total or 0) - (used or 0)
+end
+
+--- Когда файл менялся, секунды настоящего времени; nil - мод не говорит.
+function D:modified(path)
+	local ok, ms = pcall(self.p.lastModified, path)
+	if ok and type(ms) == "number" and ms > 0 then return ms / 1000 end
+	return nil
+end
+
 --- Прочитать ровно len байт с позиции pos (или меньше, если файл кончился).
 local function readAt(p, h, pos, len)
 	if pos then p.seek(h, "set", pos) end

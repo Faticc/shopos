@@ -6,7 +6,10 @@
 		{ "sys/gfx.lua",      "/sys/gfx.lua" },
 		{ "sys/catalog.lua",  "/sys/catalog.lua" },
 		{ "sys/storage.lua",  "/sys/storage.lua" },
+		{ "sys/vault.lua",    "/sys/vault.lua" },
 		{ "sys/wallet.lua",   "/sys/wallet.lua" },
+		{ "sys/rules.lua",    "/sys/rules.lua" },
+		{ "sys/admin.lua",    "/sys/admin.lua" },
 		{ "sys/shop.lua",     "/sys/shop.lua" },
 		-- каталог двумя частями: крупные иконки на один диск не влезают.
 		-- Вторая часть ложится на второй жёсткий диск, магазин найдёт её сам

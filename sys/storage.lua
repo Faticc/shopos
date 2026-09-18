@@ -65,23 +65,27 @@ local function slot(it)
 	return { id = it.id, dmg = floor(it.dmg or 0), qty = it.qty or it.count or 0, nbt = it.nbt_hash }
 end
 
---- Сколько штук предмета (без NBT) лежит в МЭ; nil - МЭ не ответила.
---- Этим пополнение проверяет, что в сеть пришли именно монеты: между
---- взглядом на слот и pushItem проходит тик, и игрок успевает подложить в
---- слот другой стак.
-function S:count(id, dmg)
+--- Ключ предмета без NBT для counts.
+function storage.tag(id, dmg) return id .. "\0" .. floor(dmg or 0) end
+
+--- Сколько чего без NBT лежит в МЭ: tag -> штук; nil - МЭ не ответила.
+--- Этим пополнение проверяет, что в сеть пришло именно то, что ушло из
+--- инвентаря: между взглядом на слот и pushItem проходит тик, и игрок
+--- успевает подложить в слот другой стак.
+function S:counts()
 	local me = self:me()
 	if not me then return nil end
 	local ok, raw = pcall(me.getAvailableItems)
 	if not ok or type(raw) ~= "table" then return nil end
-	local n = 0
+	local out = {}
 	for i = 1, #raw do
 		local f = raw[i].fingerprint
-		if f and f.id == id and floor(f.dmg or 0) == dmg and not f.nbt_hash then
-			n = n + (raw[i].size or 0)
+		if f and f.id and not f.nbt_hash then
+			local k = storage.tag(f.id, f.dmg)
+			out[k] = (out[k] or 0) + (raw[i].size or 0)
 		end
 	end
-	return n
+	return out
 end
 
 --- Слоты игрока: номер -> { id, dmg, qty, nbt }. Весь инвентарь одним
@@ -112,33 +116,45 @@ end
 --- Выдать count штук из МЭ в PIM. Возвращает, сколько ушло на самом деле:
 --- инвентарь может кончиться посреди выдачи. nbt - hash из состава сети:
 --- тогда уходит ровно этот экземпляр.
+---
+--- Выдача идёт в слоты по номерам (intoSlot у exportItem): без номера МЭ
+--- кладёт куда влезет, и лишнее уезжает в слоты брони - PIM отдаёт весь
+--- инвентарь игрока, 36 слотов и ещё 4 брони. Сначала докладываются
+--- неполные стопки того же предмета, потом пустые слоты.
 function S:give(id, dmg, count, nbt)
 	local me = self:me()
 	if not me then return 0 end
 	local fp = { id = id, dmg = dmg, nbt_hash = nbt }
+	local slots = self:slotsOfPlayer()
+	local order = {}
+	if not nbt then
+		for s = 1, self.slots do
+			local it = slots[s]
+			if it and it.id == id and it.dmg == dmg and not it.nbt and it.qty < 64 then order[#order + 1] = s end
+		end
+	end
+	for s = 1, self.slots do
+		if not slots[s] then order[#order + 1] = s end
+	end
 	local sent = 0
-	while sent < count do
-		local ok, res = pcall(me.exportItem, fp, self.up, min(64, count - sent))
+	for _, s in ipairs(order) do
+		if sent >= count then break end
+		local ok, res = pcall(me.exportItem, fp, self.up, min(64, count - sent), s)
 		local n = (ok and type(res) == "table") and (res.size or 0) or 0
-		if n <= 0 then break end
 		sent = sent + n
+		-- в пустой слот не легло ничего - товар в МЭ кончился
+		if n <= 0 and not slots[s] then break end
 	end
 	return sent
 end
 
---- Забрать у игрока все стопки этого предмета без NBT. Возвращает число
---- штук, которые действительно ушли в МЭ.
-function S:takeAll(id, dmg)
+--- Столкнуть стопку из слота игрока в МЭ. Возвращает, сколько ушло.
+function S:push(slot, n)
 	local pim = self:pim()
 	if not pim then return 0 end
-	local got = 0
-	for slot, it in pairs(self:slotsOfPlayer()) do
-		if it.id == id and it.dmg == dmg and not it.nbt then
-			local ok, n = pcall(pim.pushItem, self.down, slot, it.qty)
-			if ok and type(n) == "number" and n > 0 then got = got + n end
-		end
-	end
-	return got
+	local ok, got = pcall(pim.pushItem, self.down, slot, n)
+	if ok and type(got) == "number" and got > 0 then return got end
+	return 0
 end
 
 return storage
