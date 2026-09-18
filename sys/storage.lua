@@ -26,8 +26,10 @@ end
 function S:me() return component.me_interface end
 function S:pim() return component.pim end
 
---- Что есть в МЭ: список { id, dmg, size }. Стопки с NBT пропускаются:
---- выдача идёт по отпечатку id+dmg, и такой отпечаток их не достаёт.
+--- Что есть в МЭ: список { id, dmg, size, nbt }. Стопки с NBT (броня и
+--- инструменты с зарядом, зачарованное) идут отдельными записями со своим
+--- nbt_hash: короткий отпечаток id+dmg их из МЭ не достаёт, выдавать их
+--- можно только по полному.
 function S:scan()
 	local me = self:me()
 	if not me then return nil, "нет МЭ-интерфейса" end
@@ -37,13 +39,13 @@ function S:scan()
 	for i = 1, #raw do
 		local it = raw[i]
 		local f = it.fingerprint
-		if f and f.id and not f.nbt_hash and (it.size or 0) > 0 then
+		if f and f.id and (it.size or 0) > 0 then
 			local dmg = floor(f.dmg or 0)
-			local k = f.id .. "\0" .. dmg
+			local k = f.id .. "\0" .. dmg .. "\0" .. (f.nbt_hash or "")
 			local e = byKey[k]
 			if e then e.size = e.size + it.size
 			else
-				e = { id = f.id, dmg = dmg, size = it.size }
+				e = { id = f.id, dmg = dmg, size = it.size, nbt = f.nbt_hash }
 				byKey[k] = e
 				out[#out + 1] = e
 			end
@@ -108,11 +110,12 @@ function S:freeSlots()
 end
 
 --- Выдать count штук из МЭ в PIM. Возвращает, сколько ушло на самом деле:
---- инвентарь может кончиться посреди выдачи.
-function S:give(id, dmg, count)
+--- инвентарь может кончиться посреди выдачи. nbt - hash из состава сети:
+--- тогда уходит ровно этот экземпляр.
+function S:give(id, dmg, count, nbt)
 	local me = self:me()
 	if not me then return 0 end
-	local fp = { id = id, dmg = dmg }
+	local fp = { id = id, dmg = dmg, nbt_hash = nbt }
 	local sent = 0
 	while sent < count do
 		local ok, res = pcall(me.exportItem, fp, self.up, min(64, count - sent))

@@ -232,6 +232,10 @@ addNet("AdvancedSolarPanel:BlockAdvSolarPanel", 4, 2)
 addNet("customnpcs:npcMoney", 0, 1000)
 addNet("nobody:unknownThing", 0, 10)
 addNet("minecraft:enchanted_book", 0, 3, "abc123")
+-- броня и инструменты Draconic лежат в МЭ только с NBT (энергия, настройки)
+addNet("DraconicEvolution:draconicChest", 0, 1, "e1f00d")
+addNet("DraconicEvolution:wyvernPickaxe", 0, 2, "77aa01")
+addNet("DraconicEvolution:wyvernPickaxe", 0, 1, "77aa02")
 for _, key in ipairs((readCatalogKeys(40))) do
 	local id, dmg = key:match("^(.+):(%d+)$")
 	if not id or not id:find(":") then id, dmg = key, 0 end

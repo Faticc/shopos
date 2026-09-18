@@ -42,6 +42,9 @@ local COIN_VALUE = cfg.coinValue or COIN.value or 1   -- монет счёта �
 local RATE = (cfg.rate or 1) * (cfg.markup or 1)      -- монет за единицу цены
 local MODS = cfg.modNames or {}
 local SIGN = cfg.sign or "$"
+-- продавать ли стаки с NBT (броня и инструменты с зарядом, зачарованное) по
+-- цене обычного предмета из выгрузки
+local SELL_NBT = cfg.sellNbt ~= false
 
 local W, H = gfx.W, gfx.H
 
@@ -140,16 +143,19 @@ local function refresh()
 	end
 	local keys = {}
 	for i = 1, #items do
-		items[i].key = catalog.key(items[i].id, items[i].dmg)
-		keys[i] = items[i].key
+		local it = items[i]
+		it.key = catalog.key(it.id, it.dmg)
+		-- uid различает экземпляры с разным NBT; цена - по key
+		it.uid = it.nbt and (it.key .. "#" .. it.nbt) or it.key
+		keys[i] = it.key
 	end
 	cat:resolve(keys)
 	local out, coins = {}, 0
 	for i = 1, #items do
 		local it = items[i]
 		if it.id == COIN.id and it.dmg == COIN.dmg then
-			coins = coins + it.size
-		else
+			if not it.nbt then coins = coins + it.size end
+		elseif not it.nbt or SELL_NBT then
 			local rec = cat:get(it.key)
 			if rec and rec.price > 0 then
 				it.rec, it.unit = rec, unitOf(rec)
@@ -199,13 +205,13 @@ local function choose()
 		if s == "cheap" and a.unit ~= b.unit then return a.unit < b.unit end
 		if s == "dear" and a.unit ~= b.unit then return a.unit > b.unit end
 		if a.low ~= b.low then return a.low < b.low end
-		return a.key < b.key
+		return a.uid < b.uid
 	end)
 	shown = out
 end
 
-local function findStock(key)
-	for i = 1, #stock do if stock[i].key == key then return stock[i] end end
+local function findStock(uid)
+	for i = 1, #stock do if stock[i].uid == uid then return stock[i] end end
 	return nil
 end
 
@@ -454,6 +460,9 @@ local function drawItem()
 	local wtxt = W - x - 2
 	text(x, 10, clip(e.label, wtxt), C.white, C.bg)
 	text(x, 11, clip(modName(e.mod) .. "  ·  " .. e.key, wtxt), C.faint, C.bg)
+	if e.nbt then
+		text(x, 12, clip("особый экземпляр: заряд, улучшения или чары - выдаётся именно он", wtxt), C.accent, C.bg)
+	end
 
 	local col = floor(wtxt / 3)
 	text(x, 14, "цена за штуку", C.dim, C.bg)
@@ -712,14 +721,14 @@ function shop.buy()
 	if not left then shop.say("не удалось списать деньги", C.red) return end
 	balance = left
 	shop.say("выдаю…", C.dim)
-	local sent = store:give(e.id, e.dmg, qty)
+	local sent = store:give(e.id, e.dmg, qty, e.nbt)
 	local paid = totalOf(e, sent)
 	if paid < cost then balance = wallet.add(nick, cost - paid) or wallet.get(nick) end
 	wallet.log(("%s купил %s x%d/%d за %s, счёт %s"):format(
-		nick, e.key, sent, qty, wallet.format(paid), wallet.format(balance)))
+		nick, e.uid, sent, qty, wallet.format(paid), wallet.format(balance)))
 
 	refresh()
-	local now = findStock(e.key)
+	local now = findStock(e.uid)
 	if now then
 		view.item = now
 		view.qty = max(1, min(view.qty, now.size))
