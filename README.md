@@ -81,7 +81,7 @@ python tools/shopcat.py "C:\Users\User\McSkill\clients\Industrial_1.7.10\dumps\p
 wget -f https://raw.githubusercontent.com/Faticc/shopos/main/install.lua /tmp/i.lua && /tmp/i.lua --clean
 ```
 
-и `reboot`. `--clean` стирает OpenOS и прежний ShopOS (`/os`). `--dry`
+— машина перезагрузится сама (`--noreboot`, чтобы не надо). `--clean` стирает OpenOS и прежний ShopOS (`/os`). `--dry`
 показывает, что будет записано. `cfg/shop.cfg`, если он уже есть на диске,
 не перезаписывается. Каталог качается потоком прямо в файл — в память
 машины он не поднимается.

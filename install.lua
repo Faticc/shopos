@@ -3,6 +3,7 @@
 --
 --   --repo=владелец/репо  --branch=ветка  --disk=адрес
 --   --clean  стереть OpenOS (и прежний ShopOS из /os)   --dry  только показать
+--   --noreboot  не перезагружать в конце (по умолчанию перезагружает сам)
 
 local component = require("component")
 local computer = require("computer")
@@ -98,4 +99,14 @@ end
 
 if not disk.exists("/var") then disk.makeDirectory("/var") end
 computer.setBootAddress(target)
-print("готово, осталось: reboot")
+-- Перезагружаемся сами. После --clean набрать reboot уже нельзя: шелл
+-- ищет команду через /lib/tools/programLocations.lua, а /lib стёрт.
+-- computer.shutdown - вызов к самой машине, файлы OpenOS ему не нужны.
+if opts.noreboot then
+	print("готово, перезагрузка: выключить и включить машину")
+else
+	print("готово, перезагрузка через 3 с...")
+	local t = computer.uptime() + 3
+	while computer.uptime() < t do computer.pullSignal(t - computer.uptime()) end
+	computer.shutdown(true)
+end
