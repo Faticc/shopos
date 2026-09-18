@@ -87,7 +87,10 @@ local function fetch(path)
 	if code and code ~= 200 then
 		pcall(handle.close)
 		if code == 404 then
-			return nil, ("нет файла %s в %s@%s"):format(path, REPO, BRANCH)
+			-- у приватного репозитория raw отдаёт ровно тот же 404, что и у
+			-- опечатки в пути: без токена они неотличимы
+			return nil, ("нет файла %s в %s@%s (либо репозиторий приватный, "
+				.. "тогда нужен --token=файл)"):format(path, REPO, BRANCH)
 		end
 		return nil, ("HTTP %s %s"):format(tostring(code), tostring(message))
 	end
