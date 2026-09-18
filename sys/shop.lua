@@ -31,7 +31,7 @@ local COIN = cfg.currency or {}
 if COIN[1] then COIN = COIN[1] end
 if not COIN.id then COIN = { id = "customnpcs:npcMoney", dmg = 0 } end
 local COIN_VALUE = cfg.coinValue or COIN.value or 1   -- монет счёта за штуку
-local RATE = (cfg.rate or 100) * (cfg.markup or 1)    -- монет за единицу цены
+local RATE = (cfg.rate or 1) * (cfg.markup or 1)      -- монет за единицу цены
 local MODS = cfg.modNames or {}
 local SIGN = cfg.sign or "$"
 
@@ -87,20 +87,23 @@ local toast = { text = nil, colour = C.dim, till = 0 }
 --- округляется только итог.
 local function unitOf(rec) return rec.price * RATE * 100 end
 
+--- Итог в сотых: до ближайшей сотой, но не меньше одной - иначе кирка за
+--- 1.50028 стоила бы 1.51, а горсть земли - ноль.
 local function totalOf(e, n)
 	if n <= 0 then return 0 end
-	return max(1, ceil(n * e.unit - 1e-6))
+	return max(1, floor(n * e.unit + 0.5))
 end
 
 local function money(cents) return wallet.format(cents) .. " " .. SIGN end
 
---- Цена за штуку для витрины: дешёвое показывается с тремя знаками, иначе
---- всё, что дешевле сотой, выглядело бы бесплатным.
+--- Цена за штуку для витрины. Дешевле сотой - столько знаков, сколько
+--- нужно, чтобы стало видно цифру: земля 0.00004, а не 0.00.
 local function unitText(e)
 	local u = e.unit / 100
-	if u >= 1 then return wallet.format(ceil(e.unit - 1e-6)) .. " " .. SIGN end
-	if u >= 0.01 then return ("%.2f %s"):format(u, SIGN) end
-	return ("%.4f %s"):format(u, SIGN)
+	if u >= 0.01 then return wallet.format(floor(e.unit + 0.5)) .. " " .. SIGN end
+	local d = 3
+	while d < 8 and u * 10 ^ d < 1 do d = d + 1 end
+	return ("%." .. d .. "f %s"):format(u, SIGN)
 end
 
 local function num(n)

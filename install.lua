@@ -3,6 +3,7 @@
 --
 --   --repo=владелец/репо  --branch=ветка  --disk=адрес
 --   --clean  стереть OpenOS (и прежний ShopOS из /os)   --dry  только показать
+--   --cfg  перезаписать и /cfg/shop.cfg (по умолчанию он не трогается)
 --   --noreboot  не перезагружать в конце (по умолчанию перезагружает сам)
 
 local component = require("component")
@@ -88,8 +89,8 @@ if opts.clean then
 end
 
 for _, f in ipairs(manifest.files) do
-	if f.keep and disk.exists(f[2]) then
-		print("  = " .. f[2])
+	if f.keep and disk.exists(f[2]) and not opts.cfg then
+		print("  = " .. f[2] .. "  (есть, не трогаю; --cfg перезапишет)")
 	else
 		local size, err = download(f[1], f[2])
 		if not size then die("оборвалось на " .. f[1] .. ": " .. tostring(err) .. "\n/init.lua не тронут") end
