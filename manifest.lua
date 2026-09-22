@@ -16,8 +16,8 @@
 		{ "sys/shop.lua",    "/sys/shop.lua",  size = 63924, crc = "528d8b63" },
 		-- каталог двумя частями: крупные иконки на один диск не влезают.
 		-- Вторая часть ложится на второй жёсткий диск, магазин найдёт её сам
-		{ "data/catalog.bin", "/data/catalog.bin",size = 2661940, crc = "690383a0", big = true, gz = "data/catalog.bin.gz", gzsize = 452565 },
-		{ "data/catalog.2.bin", "/data/catalog.2.bin",size = 2970624, crc = "2812a7f8", big = true, disk = 2, gz = "data/catalog.2.bin.gz", gzsize = 402577 },
+		{ "data/catalog.bin", "/data/catalog.bin",size = 2661940, crc = "97b82026", big = true, gz = "data/catalog.bin.gz", gzsize = 463054 },
+		{ "data/catalog.2.bin", "/data/catalog.2.bin",size = 2970624, crc = "a08d6dc3", big = true, disk = 2, gz = "data/catalog.2.bin.gz", gzsize = 418174 },
 		{ "cfg/shop.cfg",    "/cfg/shop.cfg",  size = 3279, crc = "b8d18532", keep = true },
 		{ "init.lua",        "/init.lua",      size = 4857, crc = "6ad6ba43" },
 	},
