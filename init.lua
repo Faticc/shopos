@@ -19,7 +19,10 @@ do
 		gpu = component.proxy(addr)
 		pcall(gpu.bind, screen)
 		W, H = gpu.maxResolution()
-		gpu.setResolution(W, H)
+		-- setResolution - не прямой вызов, целый тик: экран и так обычно
+		-- нужного размера
+		local cw, ch = gpu.getResolution()
+		if cw ~= W or ch ~= H then gpu.setResolution(W, H) end
 		-- Палитру помнит монитор, а не машина: её переживает и перезагрузка,
 		-- и смена диска. Серые магазина - это ровно штатная палитра (15, 30,
 		-- ... 240), так что чужая - от ролика или игры на этом же экране -

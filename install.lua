@@ -55,22 +55,53 @@ local function fetch(path, sink)
 	return size
 end
 
+-- Распаковщик для .gz-двойников каталога: на гите каталог лежит ещё и
+-- сжатым, в 6-7 раз легче, а интернет-карта платит тиком за каждые 2 КБ.
+-- Качается первым и живёт только в памяти установщика.
+local inflate
+do
+	local parts = {}
+	if fetch("sys/inflate.lua", function(c) parts[#parts + 1] = c end) then
+		local f = load(table.concat(parts), "=inflate", "t", _ENV)
+		local ok, m = pcall(f or error)
+		if ok and type(m) == "table" then inflate = m end
+	end
+end
+
 --- Скачать прямо в файл: сначала рядом, подмена - только если всё дошло.
 --- Большие части каталога стираются заранее: старая и новая рядом на диск
---- в 4 МБ не лягут.
-local function download(dev, from, to, big)
+--- в 4 МБ не лягут. gz - сжатый двойник: качается он и распаковывается на
+--- лету; нет его на гите - качается сам файл.
+local function download(dev, from, to, big, gz)
 	local dir = to:match("^(.*)/[^/]*$")
 	if dir and dir ~= "" and not dev.exists(dir) then dev.makeDirectory(dir) end
 	if big then dev.remove(to) end
 	local tmp = to .. ".part"
-	local h, why = dev.open(tmp, "w")
-	if not h then return nil, why end
-	local size, err = fetch(from, function(chunk)
-		local ok, werr = dev.write(h, chunk)
-		if not ok then error("запись: " .. tostring(werr or "нет места на диске"), 0) end
-	end)
-	dev.close(h)
-	if not size then dev.remove(tmp) return nil, err end
+	local function put(h)
+		return function(chunk)
+			local ok, werr = dev.write(h, chunk)
+			if not ok then error("запись: " .. tostring(werr or "нет места на диске"), 0) end
+		end
+	end
+	local size, err
+	if gz and inflate then
+		local h, why = dev.open(tmp, "w")
+		if not h then return nil, why end
+		local z = inflate.new(put(h), "gzip")
+		size, err = fetch(gz, function(chunk) z:feed(chunk) end)
+		dev.close(h)
+		if size and not z.done then size, err = nil, "сжатый поток оборвался" end
+		if size then size = z.size end
+		if not size then dev.remove(tmp) end
+		if not size and not tostring(err):find("HTTP 404", 1, true) then return nil, err end
+	end
+	if not size then
+		local h, why = dev.open(tmp, "w")
+		if not h then return nil, why end
+		size, err = fetch(from, put(h))
+		dev.close(h)
+		if not size then dev.remove(tmp) return nil, err end
+	end
 	dev.remove(to)
 	dev.rename(tmp, to)
 	return size
@@ -176,7 +207,7 @@ for _, f in ipairs(manifest.files) do
 	if f.keep and disk.exists(f[2]) and not opts.cfg then
 		print("  = " .. f[2] .. "  (есть, не трогаю; --cfg перезапишет)")
 	else
-		local size, err = download(f.disk == 2 and disk2 or disk, f[1], f[2], f.big)
+		local size, err = download(f.disk == 2 and disk2 or disk, f[1], f[2], f.big, f.gz)
 		if not size then die("оборвалось на " .. f[1] .. ": " .. tostring(err) .. "\n/init.lua не тронут") end
 		print(("  + %-20s %d КБ"):format(f[2], math.ceil(size / 1024)))
 	end

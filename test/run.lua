@@ -14,6 +14,11 @@
 --   give:мод:имя:мета:N   положить игроку N штук предмета
 --   old:Ник:сотые     счёт прежнего формата в /var/wallet до запуска
 --   nodata            без третьего диска: данные на загрузочном
+--   sandbox           загрузочный диск - копия shopos/ в <папка>/root, а
+--                     интернет-карта отдаёт файлы из shopos/, как гит:
+--                     так проверяется обновление, не трогая репозиторий
+--   stale:путь        в песочнице стереть файл до запуска (обновлению есть
+--                     что качать)
 --
 -- Кадры пишутся в <папка>/<имя>.json - их рисует tools/renderscreen.py.
 -- /var машины ложится в <папка>/var, диск данных - в <папка>/data3, чтобы
@@ -26,11 +31,21 @@ local SCRIPT = arg[2] or ""
 if SCRIPT:sub(1, 1) == "@" then SCRIPT = assert(io.open(SCRIPT:sub(2), "rb")):read("a"):gsub("%s+$", "") end
 local MAXREAD = 2048
 local NODATA = SCRIPT:find("nodata", 1, true) ~= nil
+local SANDBOX = SCRIPT:find("sandbox", 1, true) ~= nil
 
 local function sh(cmd) return os.execute(cmd) end
 local function win(p) return (p:gsub("/", "\\")) end
 sh('mkdir "' .. win(OUT) .. '\\var" 2>nul')
 if not NODATA then sh('mkdir "' .. win(OUT) .. '\\data3" 2>nul') end
+if SANDBOX then
+	-- копия того, что лежит на диске машины после установки
+	for _, d in ipairs({ "sys", "cfg", "data" }) do
+		sh('xcopy /E /I /Q /Y "' .. d .. '" "' .. win(OUT) .. '\\root\\' .. d .. '" >nul')
+	end
+	sh('copy /Y init.lua "' .. win(OUT) .. '\\root\\init.lua" >nul')
+	sh('del /Q "' .. win(OUT) .. '\\root\\data\\*.gz" 2>nul')
+	for p in SCRIPT:gmatch("stale:([^,]+)") do os.remove(OUT .. "/root/" .. p) end
+end
 -- счета прежнего формата - до загрузки: их должен подхватить переезд
 for n, c in SCRIPT:gmatch("old:([%w_]+):(%d+)") do
 	sh('mkdir "' .. win(OUT) .. '\\var\\wallet" 2>nul')
@@ -224,10 +239,12 @@ local function mkfs(addr, real)
 	return fs
 end
 
--- загрузочный: сам каталог shopos/, только /var - в папку вывода
+-- загрузочный: сам каталог shopos/ (в песочнице - его копия), только
+-- /var - в папку вывода
 local fs = mkfs("disk-0", function(path)
 	path = path:gsub("^/+", "")
 	if path == "var" or path:match("^var/") then return OUT .. "/" .. path end
+	if SANDBOX then return OUT .. "/root/" .. path end
 	return path == "" and "." or path
 end)
 -- диск данных: пустой жёсткий диск, вся его ФС - в <папка>/data3
@@ -373,8 +390,52 @@ end
 
 -- ------------------------------------------------------------------ машина
 
+-- ------------------------------------------------------------------ интернет
+
+-- Как в моде: request сразу, response - со второго раза, read отдаёт не
+-- больше 2 КБ и между кусками - пустую строку (карта подкачивает), каждый
+-- read - тик. Файлы - из shopos/, текст с LF, как отдаёт raw.githubusercontent.
+local hold = 0            -- открытых запросов: пока есть, события не трогаем
+local served, midShot = 0, false
+local internet = { type = "internet", address = "net-0" }
+function internet.isHttpEnabled() return true end
+function internet.request(url)
+	local path = url:match("^https://raw%.githubusercontent%.com/[^/]+/[^/]+/[^/]+/(.+)$")
+	local f = path and io.open(path, "rb")
+	local body = f and f:read("a")
+	if f then f:close() end
+	if body and not path:match("%.bin$") and not path:match("%.gz$") then body = body:gsub("\r\n", "\n") end
+	hold = hold + 1
+	local h, asked, pos, empty, closed = {}, 0, 1, true, false
+	function h.response()
+		asked = asked + 1
+		if asked < 2 then return nil end
+		return body and 200 or 404, body and "OK" or "Not Found", {}
+	end
+	function h.read(n)
+		now = now + 0.05
+		if not body then return nil, "404" end
+		if pos > #body then return nil end
+		if empty then empty = false return "" end
+		empty = true
+		local k = math.min(n or 2048, 2048)
+		local s = body:sub(pos, pos + k - 1)
+		pos = pos + #s
+		if path:match("%.gz$") then
+			served = served + #s
+			if not midShot and served > 300000 then midShot = true shot("upd-mid") end
+		end
+		return s
+	end
+	function h.close()
+		if not closed then closed = true hold = hold - 1 end
+	end
+	return h
+end
+
 local comps = { ["gpu-0"] = gpu, ["screen-0"] = { type = "screen" }, ["disk-0"] = fs,
                 ["me-0"] = me, ["pim-0"] = pim }
+if SANDBOX then comps["net-0"] = internet end
 if data3 then comps["disk-3"] = data3 end
 
 local component = {}
@@ -413,8 +474,15 @@ function computer.totalMemory() return 1024 * 1024 end
 function computer.getBootAddress() return "disk-0" end
 function computer.tmpAddress() return "tmp-0" end
 function computer.pushSignal(...) table.insert(queue, 1, table.pack(...)) end
+function computer.shutdown()
+	print("перезагрузка")
+	report()
+	os.exit(0)
+end
 function computer.pullSignal(timeout)
 	now = now + 0.05
+	-- идёт загрузка: её ожидания не должны съедать события сценария
+	if hold > 0 then return nil end
 	local ev = table.remove(queue, 1)
 	if not ev then
 		report()

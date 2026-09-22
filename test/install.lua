@@ -140,8 +140,10 @@ function shell.parse(...)
 end
 
 local internet = {}
+local gzCount = 0          -- сколько пришло сжатыми двойниками
 function internet.request(url)
 	local path = url:match("/main/(.+)$")
+	if path:match("%.gz$") then gzCount = gzCount + 1 end
 	local f = io.open(path, "rb")
 	local data = f and f:read("a")
 	if f then f:close() end
@@ -170,6 +172,7 @@ local ok, e = pcall(chunk, table.unpack(args))
 if not ok and not (type(e) == "table" and e.exit) then error(e) end
 print(("-- код выхода %s, загрузка с %s"):format(ok and 0 or e.exit, tostring(boot)))
 print(("-- диск a: занято %d КБ из 4096, диск b: %d КБ"):format(A.used // 1024, B.used // 1024))
+print(("-- сжатыми двойниками (.gz) пришло файлов: %d"):format(gzCount))
 for _, p in ipairs({ "/init.lua", "/data/catalog.bin", "/os", "/data/shop.bin", "/lib", "/cfg/shop.cfg" }) do
 	print(("   a%-20s %s"):format(p, A.exists(p) and "есть" or "нет"))
 end
