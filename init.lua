@@ -20,6 +20,16 @@ do
 		pcall(gpu.bind, screen)
 		W, H = gpu.maxResolution()
 		gpu.setResolution(W, H)
+		-- Палитру помнит монитор, а не машина: её переживает и перезагрузка,
+		-- и смена диска. Серые магазина - это ровно штатная палитра (15, 30,
+		-- ... 240), так что чужая - от ролика или игры на этом же экране -
+		-- перекрашивает весь интерфейс. Возвращаем штатную, трогая только
+		-- то, что разошлось: setPaletteColor стоит машине паузы.
+		for i = 0, 15 do
+			local s = math.floor(255 * (i + 1) / 17) * 0x010101
+			local ok, cur = pcall(gpu.getPaletteColor, i)
+			if ok and cur ~= s then pcall(gpu.setPaletteColor, i, s) end
+		end
 	end
 end
 
