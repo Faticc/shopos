@@ -29,6 +29,7 @@ local MONEY_ONLY = {
 local FILE = vault.path("/rules.cfg")
 local sets = { res = {}, only = {} }
 local rate = 100          -- курс скупки, % цены из выгрузки
+local test = false        -- тестовый режим: витрина работает, покупки отключены
 
 local function fill(name, list)
 	sets[name] = {}
@@ -40,6 +41,7 @@ function rules.init(cfg)
 	fill("res", t.resources or cfg.resources or RESOURCES)
 	fill("only", t.moneyOnly or cfg.moneyOnly or MONEY_ONLY)
 	rate = floor(tonumber(t.rate or cfg.buyRate or 100) or 100)
+	if t.testMode ~= nil then test = t.testMode == true else test = cfg.testMode == true end
 end
 
 --- Скупается ли предмет с этим ключом каталога.
@@ -49,6 +51,10 @@ function rules.accepts(key) return sets.res[key] == true end
 function rules.moneyOnly(key) return sets.only[key] == true end
 
 function rules.rate() return rate end
+
+--- Тестовый режим: витрина, поиск, приём и скупка работают как обычно,
+--- но купить ничего нельзя - см. shop.buy().
+function rules.testMode() return test end
 
 --- Ключи списка ("res" или "only") по алфавиту.
 function rules.list(name)
@@ -61,7 +67,8 @@ end
 local function save()
 	if not vault.fs then return false end
 	local out = { "-- скупка и «только за деньги»: правит админка магазина", "{",
-		("\trate = %d,"):format(rate) }
+		("\trate = %d,"):format(rate),
+		("\ttestMode = %s,"):format(tostring(test)) }
 	for _, p in ipairs({ { "resources", "res" }, { "moneyOnly", "only" } }) do
 		out[#out + 1] = "\t" .. p[1] .. " = {"
 		for _, k in ipairs(rules.list(p[2])) do out[#out + 1] = ("\t\t%q,"):format(k) end
@@ -82,6 +89,13 @@ end
 function rules.setRate(p)
 	rate = max(1, min(1000, floor(p)))
 	return rate, save()
+end
+
+--- Включить или выключить тестовый режим. Возвращает новое состояние и
+--- записалось ли на диск.
+function rules.setTest(on)
+	test = on and true or false
+	return test, save()
 end
 
 return rules

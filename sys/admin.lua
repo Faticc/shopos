@@ -111,6 +111,16 @@ local function setRate(d)
 	redraw()
 end
 
+--- Тестовый режим: покупки закрыты, всё остальное (витрина, поиск,
+--- пополнение, скупка, снятие, админка) работает как обычно.
+local function setTest()
+	if not ui.present() then return end
+	local on, saved = rules.setTest(not rules.testMode())
+	wallet.log(("АДМИН %s: тестовый режим %s"):format(ui.nick(), on and "включён" or "выключен"))
+	if not saved then ui.say("не записалось на диск данных - после перезапуска вернётся как было", C.red) end
+	redraw()
+end
+
 --- Переключатель в строку: «скупка: да».
 local function toggle(x, y, w, on, name, fn)
 	text(x, y, pad(name .. (on and ": да" or ": нет"), w, "center"), on and C.black or C.text, on and C.green or C.line)
@@ -154,6 +164,14 @@ local function drawItems()
 	local _, iron = label("minecraft:iron_ingot")
 	local example = iron and ("  64 железа → " .. ui.resm(floor(64 * ui.buyIn(iron) + 1e-6))) or ""
 	text(bx + 2, 10, clip("ресурс идёт на ресурсный счёт по этому проценту цены из выгрузки" .. example, W - bx - 4), C.faint, C.bg)
+
+	-- тестовый режим: покупки закрыты, всё остальное - как обычно
+	local test = rules.testMode()
+	button(3, 11, 32, 2, test and "ТЕСТОВЫЙ РЕЖИМ: ВКЛЮЧЁН" or "ТЕСТОВЫЙ РЕЖИМ: ВЫКЛЮЧЕН",
+		test and C.black or C.text, test and C.gold or C.line)
+	ui.hit(3, 11, 32, 2, setTest)
+	text(37, 11, clip("покупки закрыты, всё остальное как обычно: пополнение, скупка, снятие, поиск, админка",
+		W - 40), test and C.gold or C.faint, C.bg)
 
 	-- слева: инвентарь админа
 	local L = 3

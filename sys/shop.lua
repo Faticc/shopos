@@ -355,6 +355,12 @@ local function drawHeader()
 	fill(1, 1, W, 3, C.panel)
 	if view.screen == "idle" then return end    -- там название крупно
 	text(3, 2, TITLE, C.gold, C.panel)
+	local sx = SX
+	if rules.testMode() then
+		local bx, bw = 3 + ulen(TITLE) + 1, 12
+		button(bx, 1, bw, 3, "ТЕСТ-РЕЖИМ", C.black, C.gold)
+		sx = max(SX, bx + bw + 2)
+	end
 	if not nick then return end
 	-- справа налево: ПОПОЛНИТЬ, СКУПКА, СНЯТЬ, АДМИН, ресурсы, деньги, ник
 	local bx = W - 14
@@ -383,7 +389,7 @@ local function drawHeader()
 	local nx = x - 2 - max(ulen(nick), 5)
 	text(nx, 1, "игрок", C.dim, C.panel)
 	text(nx, 2, nick, C.text, C.panel)
-	drawSearch(SX, nx - 3 - SX)
+	drawSearch(sx, nx - 3 - sx)
 end
 
 local function footerText()
@@ -601,15 +607,18 @@ local function drawItem()
 	if not inStock then text(x, 26, "в наличии только " .. num(e.size) .. " шт.", C.red, C.bg) end
 
 	-- кнопка оплаты с одного счёта, под ней - хватает ли
+	local testMode = rules.testMode()
 	local function pay(bx, kind)
 		local have = kind == "r" and balR or balM
 		local fmt = kind == "r" and resm or money
-		local ok = inStock and total <= have
+		local ok = inStock and total <= have and not testMode
 		local back = kind == "r" and C.accent or C.green
 		button(bx, 28, 32, 5, kind == "r" and "КУПИТЬ ЗА РЕСУРСЫ" or "КУПИТЬ ЗА ДЕНЬГИ",
 			ok and C.black or C.faint, ok and back or C.card)
 		if ok then hit(bx, 28, 32, 5, function() shop.buy(kind) end) end
-		if total > have then
+		if testMode then
+			text(bx, 34, clip("тестовый режим - покупка отключена", 32), C.gold, C.bg)
+		elseif total > have then
 			text(bx, 34, clip("не хватает " .. fmt(total - have), 32), C.red, C.bg)
 		else
 			text(bx, 34, clip("останется " .. fmt(have - total), 32), C.dim, C.bg)
@@ -772,6 +781,10 @@ local function drawIdle()
 	local t = table.concat(spaced, " ")
 	fill(1, cy, W, 5, C.panel)
 	text(floor((W - ulen(t)) / 2) + 1, cy + 2, t, C.gold, C.panel)
+	if rules.testMode() then
+		local tag = "ТЕСТ-РЕЖИМ - ПОКУПКИ ОТКЛЮЧЕНЫ"
+		button(floor((W - ulen(tag)) / 2) - 1, cy + 4, ulen(tag) + 2, 1, tag, C.black, C.gold)
+	end
 	local msg = "Встаньте на PIM, чтобы войти"
 	text(floor((W - ulen(msg)) / 2) + 1, cy + 7, msg, C.text, C.bg)
 	local sub = "оплата монетами " .. COIN.id .. " или ресурсами из скупки"
@@ -1051,6 +1064,7 @@ end
 function shop.buy(kind)
 	local e = view.item
 	if not e or not ready() then return end
+	if rules.testMode() then shop.say("тестовый режим: покупки отключены", C.gold) return end
 	if kind == "r" and rules.moneyOnly(e.key) then return end
 	local qty = view.qty
 	local cost = totalOf(e, qty)
