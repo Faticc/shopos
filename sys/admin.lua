@@ -10,7 +10,10 @@
 --            ресурсов и его последние записи в журнале. Печать с
 --            клавиатуры ищет игрока, по нику, которого ещё нет, можно
 --            открыть счёт;
---   Журнал - последние записи, новые сверху; печать - поиск по ним.
+--   Журнал - последние записи, новые сверху; печать - поиск по ним;
+--   Обновление - сверка с гитом и загрузка изменившихся файлов, см.
+--            update.lua. Переустанавливать систему из OpenOS ради правки
+--            пары файлов больше не нужно.
 -- Каждое действие админа пишется в журнал с его ником.
 
 local gfx = require("gfx")
@@ -41,6 +44,7 @@ function admin.reset()
 		lines = nil,           -- хвост журнала
 		resPage = 1, onlyPage = 1,
 		confirm = nil,         -- { что, до когда } - обнуление ждёт второго клика
+		up = { log = {} },     -- обновление: модуль, список файлов, ход дела
 	}
 end
 admin.reset()
@@ -387,12 +391,132 @@ local function drawLog()
 	end)
 end
 
+-- ------------------------------------------------------------------ обновление
+
+--- Модуль обновления грузится по требованию: на диске, поставленном
+--- прежним установщиком, его ещё нет, и вкладка должна сказать об этом, а
+--- не уронить магазин.
+local function updater()
+	if st.up.mod == nil then
+		local ok, m = pcall(require, "update")
+		st.up.mod = ok and m or false
+		if not ok then st.up.err = "нет модуля обновления, нужна переустановка: " .. tostring(m) end
+	end
+	return st.up.mod or nil
+end
+
+local function checkUpdate(force)
+	local u = updater()
+	if not u then redraw() return end
+	st.up.err, st.up.log, st.up.done, st.up.list = nil, {}, nil, nil
+	st.up.busy = true
+	ui.say("смотрю, что изменилось на гите…", C.dim)
+	local list, why = u.check()
+	st.up.busy = false
+	if not list then st.up.err = why else st.up.list = force and u.forceAll(list) or list end
+	redraw()
+end
+
+local function applyUpdate()
+	local u = updater()
+	if not (u and st.up.list) or not ui.present() then return end
+	local n = u.pending(st.up.list)
+	if n == 0 then return end
+	st.up.busy, st.up.log, st.up.err = true, {}, nil
+	wallet.log(("АДМИН %s: обновление, файлов %d"):format(ui.nick(), n))
+	local done, why = u.apply(st.up.list, function(s)
+		local log = st.up.log
+		log[#log + 1] = s
+		while #log > 8 do table.remove(log, 1) end
+		redraw()
+	end)
+	st.up.busy = false
+	if not done then
+		st.up.err = why
+		wallet.log(("АДМИН %s: обновление не удалось - %s"):format(ui.nick(), tostring(why)))
+		redraw()
+		return
+	end
+	st.up.done = done
+	wallet.log(("АДМИН %s: обновлено файлов %d, перезагрузка"):format(ui.nick(), done))
+	redraw()
+	-- новые файлы уже на диске, а в памяти машины прежние: перезагружаемся,
+	-- дав прочитать надпись
+	local t = computer.uptime() + 3
+	while computer.uptime() < t do computer.pullSignal(t - computer.uptime()) end
+	computer.shutdown(true)
+end
+
+local function drawUpdate()
+	local u = updater()
+	local busy = st.up.busy
+	text(3, 9, "Обновление ShopOS", C.white, C.bg)
+	text(3, 10, clip(("качается только изменившееся из %s; счета, журнал и свой cfg/shop.cfg не трогаются")
+		:format(u and u.where or "гита"), W - 5), C.faint, C.bg)
+
+	button(3, 12, 16, 3, "ПРОВЕРИТЬ", busy and C.faint or C.black, busy and C.card or C.green)
+	if not busy then ui.hit(3, 12, 16, 3, function() checkUpdate(false) end) end
+	button(20, 12, 24, 3, "СКАЧАТЬ ВСЁ ЗАНОВО", busy and C.faint or C.text, busy and C.card or C.line)
+	if not busy then ui.hit(20, 12, 24, 3, function() checkUpdate(true) end) end
+
+	local sx = 47
+	if st.up.err then
+		text(sx, 13, clip(st.up.err, W - sx - 2), C.red, C.bg)
+	elseif st.up.done then
+		text(sx, 13, ("положено файлов %d - перезагрузка…"):format(st.up.done), C.green, C.bg)
+	elseif not st.up.list then
+		-- «u and u.card()» обрезало бы вторую отдачу: в Lua and даёт одно значение
+		local why, known = nil, 0
+		if u then
+			_, why = u.card()
+			for _ in pairs(u.record().files) do known = known + 1 end
+		end
+		local hint = why or (known > 0
+			and ("на диске записано файлов " .. known .. " - нажмите «ПРОВЕРИТЬ»")
+			or "записи о версии нет: сверю по хэшам, каталог - по размеру")
+		text(sx, 13, clip(hint, W - sx - 2), why and C.red or C.dim, C.bg)
+	end
+
+	if not st.up.list then return end
+
+	text(3, 15, pad("файл", 26) .. pad("размер", 11) .. "что с ним", C.dim, C.bg)
+	local y = 16
+	for i, e in ipairs(st.up.list) do
+		if y > H - 14 then break end       -- ниже идут кнопка и ход дела
+		local back = i % 2 == 0 and C.panel or C.bg
+		fill(3, y, 76, 1, back)
+		text(3, y, pad(e.to, 26), e.need and C.text or C.faint, back)
+		text(29, y, pad(ui.num(ceil(e.size / 1024)) .. " КБ", 11), e.need and C.text or C.faint, back)
+		text(40, y, clip(e.why or "", 38), e.need and C.gold or C.faint, back)
+		y = y + 1
+	end
+
+	local n, bytes = u.pending(st.up.list)
+	local ready = n > 0 and not busy
+	local by = y + 1
+	button(3, by, 34, 3, busy and "ОБНОВЛЯЮ…" or (n > 0 and "ОБНОВИТЬ И ПЕРЕЗАГРУЗИТЬ" or "ВСЁ И ТАК СВЕЖЕЕ"),
+		ready and C.black or C.faint, ready and C.green or C.card)
+	if ready then ui.hit(3, by, 34, 3, applyUpdate) end
+	if n > 0 then
+		text(39, by + 1, clip(("скачать файлов %d, %s КБ; машина перезагрузится сама")
+			:format(n, ui.num(ceil(bytes / 1024))), W - 41), C.dim, C.bg)
+	end
+
+	local ly = by + 4
+	for _, s in ipairs(st.up.log) do
+		if ly > H - 2 then break end
+		text(3, ly, clip(s, W - 5), C.dim, C.bg)
+		ly = ly + 1
+	end
+end
+
 -- ------------------------------------------------------------------ кадр
 
 function admin.draw()
 	fill(1, 4, W, H - 4, C.bg)
 	local x = 3
-	for _, t in ipairs({ { "items", "Скупка" }, { "players", "Игроки" }, { "log", "Журнал" } }) do
+	for _, t in ipairs({ { "items", "Скупка" }, { "players", "Игроки" }, { "log", "Журнал" },
+		{ "update", "Обновление" } }) do
 		local on = st.tab == t[1]
 		local w = ulen(t[2]) + 6
 		button(x, 5, w, 3, t[2], on and C.black or C.text, on and C.gold or C.line)
@@ -413,6 +537,7 @@ function admin.draw()
 
 	if st.tab == "items" then drawItems()
 	elseif st.tab == "players" then drawPlayers()
+	elseif st.tab == "update" then drawUpdate()
 	else drawLog() end
 end
 
@@ -434,7 +559,9 @@ function admin.key(ch, code)
 	elseif code == 201 then st.page = st.page - 1          -- PgUp
 	elseif code == 209 then st.page = st.page + 1          -- PgDn
 	elseif ch and ch >= 32 and ulen(st.query) < 24 then
-		if st.tab == "items" then
+		-- печать - это поиск по игрокам и журналу; со вкладок, где искать
+		-- нечего, она уводит к игрокам
+		if st.tab == "items" or st.tab == "update" then
 			st.tab, st.nicks, st.cache = "players", nil, {}
 		end
 		st.player, st.page = nil, 1

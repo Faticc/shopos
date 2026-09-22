@@ -183,6 +183,28 @@ for _, f in ipairs(manifest.files) do
 end
 
 if not disk.exists("/var") then disk.makeDirectory("/var") end
+
+-- Запись о том, что положено. По ней обновление из панели владельца
+-- (вкладка «Обновление», sys/update.lua) понимает, что менять, и качает
+-- только изменившееся - переустановка из OpenOS дальше не нужна.
+do
+	local rows = {}
+	for _, f in ipairs(manifest.files) do
+		if f.crc and not f.keep then rows[#rows + 1] = { f[2], f.crc } end
+	end
+	table.sort(rows, function(a, b) return a[1] < b[1] end)
+	local out = { "-- что и какой версии лежит на диске: пишет обновление", "{", "\tfiles = {" }
+	for _, r in ipairs(rows) do out[#out + 1] = ("\t\t[%q] = %q,"):format(r[1], r[2]) end
+	out[#out + 1] = "\t},"
+	out[#out + 1] = "}"
+	local h = disk.open("/var/installed.lua", "w")
+	if h then
+		disk.write(h, table.concat(out, "\n") .. "\n")
+		disk.close(h)
+		print("  + /var/installed.lua  (для обновления без переустановки)")
+	end
+end
+
 computer.setBootAddress(target)
 -- Перезагружаемся сами. После --clean набрать reboot уже нельзя: шелл
 -- ищет команду через /lib/tools/programLocations.lua, а /lib стёрт.

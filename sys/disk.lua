@@ -97,6 +97,18 @@ function D:table(path)
 	return ok and type(t) == "table" and t or nil
 end
 
+--- Файл, открытый на запись кусками - для обновления: каталог весит
+--- мегабайты и в память машины целиком не лезет.
+function D:writer(path)
+	local p = self.p
+	local h = p.open(path, "w")
+	if not h then return nil end
+	return {
+		put = function(chunk) return p.write(h, chunk) end,
+		close = function() pcall(p.close, h) end,
+	}
+end
+
 --- Файл, открытый на чтение по смещениям - для каталога.
 function D:reader(path)
 	local p = self.p
