@@ -400,6 +400,9 @@ local function footerText()
 		return "нет второго диска с " .. cat.path2 .. " - часть иконок не видна", C.red
 	end
 	if not nick then return "", C.dim end
+	if rules.testMode() then
+		return "ТЕСТ-РЕЖИМ: купить ничего нельзя; пополнение, скупка, снятие и поиск работают как обычно", C.gold
+	end
 	if view.screen == "admin" then return "Панель владельца: всё, что здесь меняется, пишется в журнал", C.dim end
 	return "Монеты - «ПОПОЛНИТЬ»: деньги, их можно снять. Ресурсы - «СКУПКА»: ресурсный счёт, только на покупки", C.dim
 end

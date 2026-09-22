@@ -165,14 +165,6 @@ local function drawItems()
 	local example = iron and ("  64 железа → " .. ui.resm(floor(64 * ui.buyIn(iron) + 1e-6))) or ""
 	text(bx + 2, 10, clip("ресурс идёт на ресурсный счёт по этому проценту цены из выгрузки" .. example, W - bx - 4), C.faint, C.bg)
 
-	-- тестовый режим: покупки закрыты, всё остальное - как обычно
-	local test = rules.testMode()
-	button(3, 11, 32, 2, test and "ТЕСТОВЫЙ РЕЖИМ: ВКЛЮЧЁН" or "ТЕСТОВЫЙ РЕЖИМ: ВЫКЛЮЧЕН",
-		test and C.black or C.text, test and C.gold or C.line)
-	ui.hit(3, 11, 32, 2, setTest)
-	text(37, 11, clip("покупки закрыты, всё остальное как обычно: пополнение, скупка, снятие, поиск, админка",
-		W - 40), test and C.gold or C.faint, C.bg)
-
 	-- слева: инвентарь админа
 	local L = 3
 	text(L, 13, "Ваш инвентарь: что скупать, что только за деньги", C.dim, C.bg)
@@ -407,9 +399,15 @@ function admin.draw()
 		ui.hit(x, 5, w, 3, function() tab(t[1]) end)
 		x = x + w + 1
 	end
+	-- выключатель магазина: виден с любой вкладки, это не настройка скупки
+	local test = rules.testMode()
+	local tx, tw = W - 45, 26
+	button(tx, 5, tw, 3, test and "ТЕСТ-РЕЖИМ: ВКЛЮЧЁН" or "ТЕСТ-РЕЖИМ: ВЫКЛЮЧЕН",
+		test and C.black or C.text, test and C.gold or C.line)
+	ui.hit(tx, 5, tw, 3, setTest)
 	-- где данные: владельцу это важно знать
 	local where = vault.warn or ("данные: " .. vault.where)
-	text(x + 2, 6, clip(where, W - x - 24), vault.warn and C.red or C.faint, C.bg)
+	text(x + 2, 6, clip(where, tx - x - 4), vault.warn and C.red or C.faint, C.bg)
 	button(W - 17, 5, 16, 3, "В МАГАЗИН ▶", C.black, C.green)
 	ui.hit(W - 17, 5, 16, 3, function() ui.toShop() end)
 
